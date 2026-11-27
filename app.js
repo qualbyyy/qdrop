@@ -4,7 +4,6 @@
 // Только createElement/textContent, sessionStorage и кастомные модалки.
 // ============================================================
 
-const SESSION_RELAY_KEY = 'qdrop_air_relay_url';
 const SESSION_ACCESS_KEY = 'qdrop_air_access_key';
 const MAX_TEXT_CHARS = 32768;
 const DEFAULT_MAX_FILE_BYTES = 300 * 1024 * 1024;
@@ -140,9 +139,6 @@ function initApp() {
 
   const networkModal = $('networkModal');
   const closeNetworkBtn = $('closeNetworkBtn');
-  const netRouteValue = $('netRouteValue');
-  const netRelayState = $('netRelayState');
-  const relayUrlInput = $('relayUrlInput');
   const accessKeyInput = $('accessKeyInput');
   const relayTestStatus = $('relayTestStatus');
   const resetRelayBtn = $('resetRelayBtn');
@@ -263,7 +259,7 @@ function initApp() {
   }
 
   function getRelayUrl() {
-    return readSession(SESSION_RELAY_KEY) || config.relayUrl;
+    return config.relayUrl;
   }
 
   function getAccessKey() {
@@ -294,14 +290,6 @@ function initApp() {
     statusBadge.textContent = text;
   }
 
-  function updateNetworkUi() {
-    const url = getRelayUrl();
-    netRouteValue.textContent = isPaired ? `HTTPS 443 • ${remoteDeviceName}` : 'Не подключено';
-    if (!url) netRelayState.textContent = 'Не настроен';
-    else if (readSession(SESSION_RELAY_KEY)) netRelayState.textContent = 'Активен (сессия)';
-    else netRelayState.textContent = 'Активен (config)';
-  }
-
   function renderMyCode() {
     const formatted = formatCode(roomCode);
     const display = formatted ? formatted.replace('-', ' ') : '--- ---';
@@ -325,7 +313,6 @@ function initApp() {
       connectedPeerLabel.textContent = `Подключено: ${remoteDeviceName}`;
       connectedRouteLabel.textContent = 'HTTPS 443';
     }
-    updateNetworkUi();
   }
 
   function updateFeedControls() {
@@ -420,7 +407,6 @@ function initApp() {
     const url = getRelayUrl();
     if (!url) {
       setBadge('pending', 'Нужен Relay URL');
-      updateNetworkUi();
       return;
     }
 
@@ -432,7 +418,6 @@ function initApp() {
       roomRole = res.role || 'host';
       renderMyCode();
       setBadge('', 'Готов');
-      updateNetworkUi();
       scheduleNextPoll();
     } catch (err) {
       if (err.status === 401) {
@@ -887,12 +872,11 @@ function initApp() {
   }
 
   function openNetworkModal() {
-    relayUrlInput.value = getRelayUrl();
     accessKeyInput.value = getAccessKey();
     relayTestStatus.className = 'health-status';
     relayTestStatus.textContent = '';
-    updateNetworkUi();
     openModal(networkModal);
+    accessKeyInput.focus();
   }
 
   function renderMyQr() {
@@ -1051,25 +1035,16 @@ function initApp() {
   });
 
   applyRelayBtn.addEventListener('click', async () => {
-    const urlVal = relayUrlInput.value.trim();
-    if (urlVal && !parseSafeHttpUrl(urlVal)) {
-      relayTestStatus.className = 'health-status error';
-      relayTestStatus.textContent = 'Укажи корректный https:// или http:// адрес';
-      return;
-    }
-    writeSession(SESSION_RELAY_KEY, urlVal === config.relayUrl ? '' : urlVal);
     writeSession(SESSION_ACCESS_KEY, accessKeyInput.value.trim());
     closeModal(networkModal);
     await createRoom(true);
   });
 
   resetRelayBtn.addEventListener('click', async () => {
-    writeSession(SESSION_RELAY_KEY, '');
     writeSession(SESSION_ACCESS_KEY, '');
-    relayUrlInput.value = config.relayUrl;
     accessKeyInput.value = '';
     relayTestStatus.className = 'health-status success';
-    relayTestStatus.textContent = 'Настройки сессии сброшены';
+    relayTestStatus.textContent = 'Код доступа сброшен';
     await createRoom();
   });
 

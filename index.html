@@ -45,7 +45,7 @@
               <path d="M12 21v-1"/>
             </svg>
           </button>
-          <button class="icon-btn" id="networkBtn" type="button" title="Сеть и релей" aria-label="Сеть и релей">
+          <button class="icon-btn" id="networkBtn" type="button" title="Код доступа" aria-label="Код доступа">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
@@ -185,11 +185,11 @@
     </div>
   </div>
 
-  <!-- Сеть и релей -->
+  <!-- Код доступа -->
   <div class="modal-overlay" id="networkModal" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="networkModalTitle">
       <div class="modal-header">
-        <h3 class="modal-title" id="networkModalTitle">Сеть и релей</h3>
+        <h3 class="modal-title" id="networkModalTitle">Код доступа</h3>
         <button class="icon-btn close-modal-btn" id="closeNetworkBtn" type="button" aria-label="Закрыть">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -198,26 +198,12 @@
         </button>
       </div>
       <div class="modal-body">
-        <div class="net-status-grid">
-          <div class="net-row">
-            <span class="net-label">Канал</span>
-            <span class="net-value" id="netRouteValue">Не подключено</span>
-          </div>
-          <div class="net-row">
-            <span class="net-label">Релей Yandex Cloud</span>
-            <span class="net-value" id="netRelayState">Не настроен</span>
-          </div>
-        </div>
-
         <p class="modal-hint">
-          Настройки ниже хранятся <strong>только в этой вкладке</strong> (sessionStorage) и полностью исчезают при её закрытии.
+          Код доступа хранится <strong>только в этой вкладке</strong> и полностью исчезает при её закрытии.
         </p>
 
-        <label class="field-label" for="relayUrlInput">Relay URL (функция Yandex Cloud)</label>
-        <input type="url" id="relayUrlInput" class="text-input" placeholder="https://functions.yandexcloud.net/..." autocomplete="off" spellcheck="false">
-
-        <label class="field-label" for="accessKeyInput">Код доступа (если включён в функции)</label>
-        <input type="password" id="accessKeyInput" class="text-input" placeholder="Необязательно" autocomplete="off">
+        <label class="field-label" for="accessKeyInput">Код доступа</label>
+        <input type="password" id="accessKeyInput" class="text-input" placeholder="Введи пароль" autocomplete="off">
 
         <div id="relayTestStatus" class="health-status" role="status"></div>
 
