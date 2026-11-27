@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f2f2f0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com https:; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>qdrop air — мгновенная передача P2P</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://functions.yandexcloud.net https://storage.yandexcloud.net https:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>qdrop air — быстрая передача файлов и текста</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400..700&display=swap">
@@ -45,7 +45,7 @@
               <path d="M12 21v-1"/>
             </svg>
           </button>
-          <button class="icon-btn" id="networkBtn" type="button" title="Сеть и TURN" aria-label="Сеть и TURN">
+          <button class="icon-btn" id="networkBtn" type="button" title="Сеть и релей" aria-label="Сеть и релей">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
@@ -84,7 +84,7 @@
         <div class="connected-bar" id="connectedBar" hidden>
           <div class="connected-info">
             <span class="connected-peer" id="connectedPeerLabel">Собеседник подключён</span>
-            <span class="badge" id="connectedRouteLabel">P2P</span>
+            <span class="badge configured" id="connectedRouteLabel">HTTPS 443</span>
           </div>
           <button type="button" class="btn-secondary" id="barDisconnectBtn">Отключиться</button>
         </div>
@@ -185,11 +185,11 @@
     </div>
   </div>
 
-  <!-- Сеть и TURN -->
+  <!-- Сеть и релей -->
   <div class="modal-overlay" id="networkModal" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="networkModalTitle">
       <div class="modal-header">
-        <h3 class="modal-title" id="networkModalTitle">Сеть и TURN</h3>
+        <h3 class="modal-title" id="networkModalTitle">Сеть и релей</h3>
         <button class="icon-btn close-modal-btn" id="closeNetworkBtn" type="button" aria-label="Закрыть">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -200,27 +200,30 @@
       <div class="modal-body">
         <div class="net-status-grid">
           <div class="net-row">
-            <span class="net-label">Текущий канал</span>
+            <span class="net-label">Канал</span>
             <span class="net-value" id="netRouteValue">Не подключено</span>
           </div>
           <div class="net-row">
-            <span class="net-label">TURN-прокси</span>
-            <span class="net-value" id="netTurnState">Только STUN</span>
+            <span class="net-label">Релей Yandex Cloud</span>
+            <span class="net-value" id="netRelayState">Не настроен</span>
           </div>
         </div>
 
         <p class="modal-hint">
-          Адрес TURN-прокси хранится <strong>только в этой вкладке</strong> (sessionStorage) и полностью исчезает при её закрытии.
+          Настройки ниже хранятся <strong>только в этой вкладке</strong> (sessionStorage) и полностью исчезают при её закрытии.
         </p>
 
-        <label class="field-label" for="turnProxyInput">TURN Proxy URL (необязательно)</label>
-        <input type="url" id="turnProxyInput" class="text-input" placeholder="https://qdrop-turn-proxy.example.workers.dev" autocomplete="off" spellcheck="false">
+        <label class="field-label" for="relayUrlInput">Relay URL (функция Yandex Cloud)</label>
+        <input type="url" id="relayUrlInput" class="text-input" placeholder="https://functions.yandexcloud.net/..." autocomplete="off" spellcheck="false">
 
-        <div id="turnTestStatus" class="health-status" role="status"></div>
+        <label class="field-label" for="accessKeyInput">Код доступа (если включён в функции)</label>
+        <input type="password" id="accessKeyInput" class="text-input" placeholder="Необязательно" autocomplete="off">
+
+        <div id="relayTestStatus" class="health-status" role="status"></div>
 
         <div class="modal-actions">
-          <button class="btn-secondary" id="resetTurnBtn" type="button">Сбросить</button>
-          <button class="save-btn" id="applyTurnBtn" type="button">Применить</button>
+          <button class="btn-secondary" id="resetRelayBtn" type="button">Сбросить</button>
+          <button class="save-btn" id="applyRelayBtn" type="button">Применить</button>
         </div>
       </div>
     </div>
@@ -230,7 +233,6 @@
 
   <script src="config.js"></script>
   <script src="qrcode.min.js"></script>
-  <script src="peerjs.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

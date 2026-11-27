@@ -1,49 +1,26 @@
 // ============================================================
-// qdrop-air app.js — WebRTC P2P передача файлов и текста 1-на-1.
+// qdrop-air app.js — передача файлов (до 300 МБ) и текста 1-на-1
+// через Yandex Cloud Function + приватный Object Storage (HTTPS 443).
 // Только createElement/textContent, sessionStorage и кастомные модалки.
 // ============================================================
 
-const SESSION_TURN_KEY = 'qdrop_air_turn_proxy';
-const MAX_FILE_BYTES = 300 * 1024 * 1024;
+const SESSION_RELAY_KEY = 'qdrop_air_relay_url';
+const SESSION_ACCESS_KEY = 'qdrop_air_access_key';
 const MAX_TEXT_CHARS = 32768;
-const HIGH_WATERMARK = 1024 * 1024;
-const LOW_WATERMARK = 256 * 1024;
-const DEFAULT_CHUNK_SIZE = 65536;
-const CONNECT_TIMEOUT_MS = 18000;
-const ACK_TIMEOUT_MS = 15000;
+const DEFAULT_MAX_FILE_BYTES = 300 * 1024 * 1024;
+const DEFAULT_POLL_MS = 1500;
+const HIDDEN_POLL_MS = 4000;
 
 function getConfig() {
   const cfg = globalThis.QDROP_AIR_CONFIG || {};
   return {
-    peerPrefix: typeof cfg.peerPrefix === 'string' && cfg.peerPrefix ? cfg.peerPrefix : 'qdrop-air-',
-    peerServer: cfg.peerServer && typeof cfg.peerServer === 'object' ? cfg.peerServer : null,
-    turnProxyUrl: typeof cfg.turnProxyUrl === 'string' ? cfg.turnProxyUrl.trim() : '',
-    iceServers: Array.isArray(cfg.iceServers) && cfg.iceServers.length
-      ? cfg.iceServers
-      : [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ],
-    chunkSize: Number(cfg.chunkSize) > 0 ? Number(cfg.chunkSize) : DEFAULT_CHUNK_SIZE
+    relayUrl: typeof cfg.relayUrl === 'string' ? cfg.relayUrl.trim() : '',
+    pollIntervalMs: Number(cfg.pollIntervalMs) >= 500 ? Number(cfg.pollIntervalMs) : DEFAULT_POLL_MS,
+    maxFileBytes: Number(cfg.maxFileBytes) > 0 ? Number(cfg.maxFileBytes) : DEFAULT_MAX_FILE_BYTES
   };
 }
 
 // ---------- Чистые утилиты (тестируются в Node) ----------
-
-function generateSixDigitCode() {
-  const max = 1000000;
-  const limit = Math.floor(0x100000000 / max) * max;
-  const buf = new Uint32Array(1);
-  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
-    while (true) {
-      globalThis.crypto.getRandomValues(buf);
-      if (buf[0] < limit) {
-        return String(buf[0] % max).padStart(6, '0');
-      }
-    }
-  }
-  return String(Math.floor(Math.random() * max)).padStart(6, '0');
-}
 
 function normalizeCode(raw) {
   const digits = String(raw || '').replace(/\D+/g, '');
@@ -64,7 +41,7 @@ function extractCodeFromInput(raw) {
       const toCode = normalizeCode(parsed.searchParams.get('to'));
       if (toCode) return toCode;
     } catch {
-      // Игнорируем некорректный URL и пробуем извлечь как обычный код
+      // Пробуем разобрать как обычный 6-значный код
     }
   }
   return normalizeCode(text);
@@ -163,33 +140,30 @@ function initApp() {
   const networkModal = $('networkModal');
   const closeNetworkBtn = $('closeNetworkBtn');
   const netRouteValue = $('netRouteValue');
-  const netTurnState = $('netTurnState');
-  const turnProxyInput = $('turnProxyInput');
-  const turnTestStatus = $('turnTestStatus');
-  const resetTurnBtn = $('resetTurnBtn');
-  const applyTurnBtn = $('applyTurnBtn');
+  const netRelayState = $('netRelayState');
+  const relayUrlInput = $('relayUrlInput');
+  const accessKeyInput = $('accessKeyInput');
+  const relayTestStatus = $('relayTestStatus');
+  const resetRelayBtn = $('resetRelayBtn');
+  const applyRelayBtn = $('applyRelayBtn');
 
   const toastEl = $('toast');
 
   const config = getConfig();
-  let myCode = generateSixDigitCode();
-  let peer = null;
-  let activeConn = null;
+
+  let roomCode = '';
+  let roomToken = '';
+  let roomRole = '';
+  let isPaired = false;
   let remoteDeviceName = 'Устройство';
-  let routeType = 'none'; // 'none' | 'p2p' | 'relay'
-  let turnState = 'none'; // 'none' | 'active-config' | 'active-session' | 'fallback-error'
-  let currentIceServers = [...config.iceServers];
+  let eventCursor = '';
+  const seenEventIds = new Set();
 
-  let pendingAutoConnectCode = '';
-  let peerRetries = 0;
-  let connectTimer = null;
-  let routeTimers = [];
-  let isDisconnecting = false;
-
+  let pollTimer = null;
+  let pollInFlight = false;
+  let activeXhr = null;
   const sendQueue = [];
   let isSending = false;
-  let pendingAckResolver = null;
-  let incomingTransfer = null;
   const feedEntries = [];
   let itemCounter = 0;
 
@@ -198,7 +172,7 @@ function initApp() {
   let scannerSessionId = 0;
   let toastTimer = null;
 
-  // ---------- DOM-хелперы (только createElement + textContent) ----------
+  // ---------- DOM-хелперы ----------
 
   function el(tag, props, ...children) {
     const node = document.createElement(tag);
@@ -272,25 +246,27 @@ function initApp() {
     return 'ПК';
   }
 
-  function getSessionTurnUrl() {
+  function readSession(key) {
     try {
-      return String(sessionStorage.getItem(SESSION_TURN_KEY) || '').trim();
+      return String(sessionStorage.getItem(key) || '').trim();
     } catch {
       return '';
     }
   }
 
-  function setSessionTurnUrl(url) {
+  function writeSession(key, value) {
     try {
-      if (url) sessionStorage.setItem(SESSION_TURN_KEY, url);
-      else sessionStorage.removeItem(SESSION_TURN_KEY);
-    } catch {
-      // sessionStorage может быть недоступен в приватном контексте
-    }
+      if (value) sessionStorage.setItem(key, value);
+      else sessionStorage.removeItem(key);
+    } catch {}
   }
 
-  function getEffectiveTurnProxyUrl() {
-    return getSessionTurnUrl() || config.turnProxyUrl;
+  function getRelayUrl() {
+    return readSession(SESSION_RELAY_KEY) || config.relayUrl;
+  }
+
+  function getAccessKey() {
+    return readSession(SESSION_ACCESS_KEY);
   }
 
   function buildShareUrl(code) {
@@ -310,7 +286,7 @@ function initApp() {
     }
   }
 
-  // ---------- Состояние интерфейса ----------
+  // ---------- Состояние UI ----------
 
   function setBadge(variant, text) {
     statusBadge.className = 'badge' + (variant ? ` ${variant}` : '');
@@ -318,48 +294,36 @@ function initApp() {
   }
 
   function updateNetworkUi() {
-    const routeText =
-      routeType === 'relay'
-        ? 'Relay 443 (через TURN)'
-        : routeType === 'p2p'
-          ? 'Прямой P2P (WebRTC)'
-          : 'Не подключено';
-    netRouteValue.textContent = routeText;
-
-    if (turnState === 'active-session') netTurnState.textContent = 'Активен (сессия)';
-    else if (turnState === 'active-config') netTurnState.textContent = 'Активен (config)';
-    else if (turnState === 'fallback-error') netTurnState.textContent = 'Ошибка, работает STUN';
-    else netTurnState.textContent = 'Только STUN';
-  }
-
-  function updateConnectedUi(connected) {
-    const hasOpenChannel = Boolean(connected && activeConn && activeConn.open);
-    pairCard.hidden = hasOpenChannel;
-    connectedBar.hidden = !hasOpenChannel;
-    disconnectBtn.hidden = !hasOpenChannel;
-    dropZone.classList.toggle('is-offline', !hasOpenChannel);
-    sendTextBtn.disabled = !hasOpenChannel || !textInput.value.trim();
-
-    if (hasOpenChannel) {
-      const routeShort = routeType === 'relay' ? 'Relay 443' : 'P2P';
-      const label = `${routeShort} • ${remoteDeviceName}`;
-      setBadge(routeType === 'relay' ? 'relay' : 'configured', label);
-      connectedPeerLabel.textContent = `Подключено: ${remoteDeviceName}`;
-      connectedRouteLabel.className = 'badge ' + (routeType === 'relay' ? 'relay' : 'configured');
-      connectedRouteLabel.textContent = routeShort;
-    } else {
-      routeType = 'none';
-    }
-    updateNetworkUi();
+    const url = getRelayUrl();
+    netRouteValue.textContent = isPaired ? `HTTPS 443 • ${remoteDeviceName}` : 'Не подключено';
+    if (!url) netRelayState.textContent = 'Не настроен';
+    else if (readSession(SESSION_RELAY_KEY)) netRelayState.textContent = 'Активен (сессия)';
+    else netRelayState.textContent = 'Активен (config)';
   }
 
   function renderMyCode() {
-    const formatted = formatCode(myCode);
-    myCodeDisplay.textContent = formatted.replace('-', ' ');
-    qrModalCode.textContent = formatted.replace('-', ' ');
+    const formatted = formatCode(roomCode);
+    const display = formatted ? formatted.replace('-', ' ') : '--- ---';
+    myCodeDisplay.textContent = display;
+    qrModalCode.textContent = display;
     if (qrModal.classList.contains('active') && !qrMinePanel.hidden) {
       renderMyQr();
     }
+  }
+
+  function updateConnectedUi() {
+    pairCard.hidden = isPaired;
+    connectedBar.hidden = !isPaired;
+    disconnectBtn.hidden = !isPaired;
+    dropZone.classList.toggle('is-offline', !isPaired);
+    sendTextBtn.disabled = !isPaired || !textInput.value.trim();
+
+    if (isPaired) {
+      setBadge('configured', `HTTPS 443 • ${remoteDeviceName}`);
+      connectedPeerLabel.textContent = `Подключено: ${remoteDeviceName}`;
+      connectedRouteLabel.textContent = 'HTTPS 443';
+    }
+    updateNetworkUi();
   }
 
   function updateFeedControls() {
@@ -370,7 +334,7 @@ function initApp() {
     clearFeedBtn.hidden = total === 0;
 
     const unsavedIncoming = feedEntries.filter(
-      (entry) => entry.kind === 'file' && entry.direction === 'in' && entry.objectUrl && !entry.saved
+      (entry) => entry.kind === 'file' && entry.direction === 'in' && entry.downloadUrl && !entry.saved
     );
     if (unsavedIncoming.length >= 2) {
       saveAllBtn.hidden = false;
@@ -380,349 +344,225 @@ function initApp() {
     }
   }
 
-  // ---------- ICE / TURN ----------
+  // ---------- API-клиент к Yandex Cloud Function ----------
 
-  async function loadIceServers(proxyUrl) {
-    const fallback = [...config.iceServers];
-    const targetUrl = String(proxyUrl || '').trim();
-    if (!targetUrl) {
-      turnState = 'none';
-      currentIceServers = fallback;
-      updateNetworkUi();
-      return { iceServers: fallback, ok: true, usedTurn: false };
+  async function relayCall(action, params = {}) {
+    const url = getRelayUrl();
+    if (!url) {
+      throw Object.assign(new Error('Не задан адрес релея (открой «Сеть»)'), { status: 0 });
     }
-
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(targetUrl, {
-        method: 'GET',
+      const payload = { action, ...params };
+      const accessKey = getAccessKey();
+      if (accessKey && (action === 'create' || action === 'join')) {
+        payload.accessKey = accessKey;
+      }
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
+        body: JSON.stringify(payload),
         signal: controller.signal
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const payload = await res.json();
-      const rawList = Array.isArray(payload) ? payload : payload && Array.isArray(payload.iceServers) ? payload.iceServers : null;
-      if (!rawList) throw new Error('Некорректный ответ прокси');
-      const turnServers = rawList.filter((item) => item && item.urls);
-      if (!turnServers.length) throw new Error('Пустой список ICE-серверов');
-
-      currentIceServers = [...fallback, ...turnServers];
-      turnState = getSessionTurnUrl() === targetUrl ? 'active-session' : 'active-config';
-      updateNetworkUi();
-      return { iceServers: currentIceServers, ok: true, usedTurn: true };
-    } catch (err) {
-      currentIceServers = fallback;
-      turnState = 'fallback-error';
-      updateNetworkUi();
-      return { iceServers: fallback, ok: false, usedTurn: false, error: err && err.message ? err.message : 'Ошибка TURN' };
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || `HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  // ---------- WebRTC / PeerJS (строго 1-на-1) ----------
+  // ---------- Комнаты и polling ----------
 
-  function clearRouteTimers() {
-    while (routeTimers.length) clearTimeout(routeTimers.pop());
-  }
-
-  function clearConnectTimer() {
-    if (connectTimer) {
-      clearTimeout(connectTimer);
-      connectTimer = null;
+  function stopPolling() {
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
     }
   }
 
-  function resetConnectionControls() {
-    clearConnectTimer();
-    clearRouteTimers();
-    connectBtn.disabled = false;
-    connectBtn.textContent = 'Подключиться';
+  function scheduleNextPoll() {
+    stopPolling();
+    if (!roomCode || !roomToken) return;
+    const delay = document.hidden ? HIDDEN_POLL_MS : config.pollIntervalMs;
+    pollTimer = setTimeout(pollRoom, delay);
   }
 
-  function abortPendingTransfers(reasonText) {
-    if (pendingAckResolver) {
-      const resolve = pendingAckResolver;
-      pendingAckResolver = null;
-      resolve(false);
+  function resetRoomState() {
+    stopPolling();
+    if (activeXhr) {
+      try { activeXhr.abort(); } catch {}
+      activeXhr = null;
     }
     sendQueue.length = 0;
     isSending = false;
-
-    if (incomingTransfer) {
-      if (incomingTransfer.entry) {
-        incomingTransfer.entry.setStatus('error', reasonText || 'Прервано');
-      }
-      incomingTransfer.chunks = null;
-      incomingTransfer = null;
-    }
-
-    for (const entry of feedEntries) {
-      if (entry.kind === 'file' && entry.state === 'active') {
-        entry.setStatus('error', reasonText || 'Прервано');
-      }
-    }
-  }
-
-  async function inspectConnectionRoute(conn) {
-    if (!conn || conn !== activeConn || !conn.open || !conn.peerConnection || typeof conn.peerConnection.getStats !== 'function') {
-      return;
-    }
-    try {
-      const stats = await conn.peerConnection.getStats();
-      let selectedPair = null;
-      stats.forEach((report) => {
-        if (report.type === 'transport' && report.selectedCandidatePairId) {
-          selectedPair = stats.get(report.selectedCandidatePairId) || selectedPair;
-        }
-      });
-      if (!selectedPair) {
-        stats.forEach((report) => {
-          if (report.type === 'candidate-pair' && (report.nominated || report.selected) && report.state === 'succeeded') {
-            selectedPair = report;
-          }
-        });
-      }
-      if (!selectedPair) return;
-      const localCand = stats.get(selectedPair.localCandidateId);
-      const remoteCand = stats.get(selectedPair.remoteCandidateId);
-      const isRelay =
-        (localCand && localCand.candidateType === 'relay') ||
-        (remoteCand && remoteCand.candidateType === 'relay');
-      routeType = isRelay ? 'relay' : 'p2p';
-      if (activeConn === conn && conn.open) {
-        updateConnectedUi(true);
-      }
-    } catch {
-      // Игнорируем временную недоступность статистики
-    }
-  }
-
-  function scheduleRouteChecks(conn) {
-    clearRouteTimers();
-    for (const delay of [300, 1500, 4000]) {
-      routeTimers.push(setTimeout(() => inspectConnectionRoute(conn), delay));
-    }
-  }
-
-  function rotateCodeAndReinit() {
-    if (isDisconnecting) return;
-    isDisconnecting = true;
-    abortPendingTransfers('Отключено');
-    resetConnectionControls();
-
-    const oldConn = activeConn;
-    activeConn = null;
-    if (oldConn) {
-      try { oldConn.close(); } catch {}
-    }
-
-    const oldPeer = peer;
-    peer = null;
-    if (oldPeer) {
-      try { oldPeer.destroy(); } catch {}
-    }
-
+    roomCode = '';
+    roomToken = '';
+    roomRole = '';
+    isPaired = false;
     remoteDeviceName = 'Устройство';
-    updateConnectedUi(false);
-
-    myCode = generateSixDigitCode();
-    peerRetries = 0;
+    eventCursor = '';
+    seenEventIds.clear();
     renderMyCode();
-    isDisconnecting = false;
-    initPeer();
+    updateConnectedUi();
   }
 
-  function rejectExtraConnection(extraConn) {
-    let sent = false;
-    const sendBusyAndClose = () => {
-      if (sent) return;
-      sent = true;
-      try {
-        if (extraConn.open) {
-          extraConn.send(JSON.stringify({ type: 'busy' }));
-        }
-      } catch {}
-      setTimeout(() => {
-        try { extraConn.close(); } catch {}
-      }, 150);
-    };
-
-    if (extraConn.open) {
-      sendBusyAndClose();
-    } else {
-      extraConn.on('open', sendBusyAndClose);
-      setTimeout(sendBusyAndClose, 2000);
-    }
-  }
-
-  function attachDataChannelEvents(conn) {
-    activeConn = conn;
-    remoteDeviceName = 'Устройство';
-
-    conn.on('open', () => {
-      if (conn !== activeConn) return;
-      resetConnectionControls();
-      routeType = 'p2p';
-      try {
-        conn.send(JSON.stringify({ type: 'hello', device: getDeviceLabel() }));
-      } catch {}
-      updateConnectedUi(true);
-      scheduleRouteChecks(conn);
-      showToast('Устройства связаны', 'success');
-    });
-
-    conn.on('data', (raw) => {
-      if (conn !== activeConn) return;
-      handleIncomingPayload(raw);
-    });
-
-    conn.on('close', () => {
-      if (conn !== activeConn || isDisconnecting) return;
-      showToast('Собеседник отключился');
-      rotateCodeAndReinit();
-    });
-
-    conn.on('error', () => {
-      if (conn !== activeConn || isDisconnecting) return;
-      showToast('Соединение прервано', 'error');
-      rotateCodeAndReinit();
-    });
-  }
-
-  function initPeer() {
-    if (typeof Peer === 'undefined') {
-      setBadge('error', 'PeerJS не загружен');
+  async function createRoom() {
+    resetRoomState();
+    const url = getRelayUrl();
+    if (!url) {
+      setBadge('pending', 'Нужен Relay URL');
+      updateNetworkUi();
       return;
     }
 
-    setBadge('pending', 'Регистрация…');
-    const peerId = config.peerPrefix + myCode;
-    const opts = {
-      config: { iceServers: currentIceServers }
-    };
-    if (config.peerServer) {
-      Object.assign(opts, config.peerServer);
+    setBadge('pending', 'Создание…');
+    try {
+      const res = await relayCall('create', { device: getDeviceLabel() });
+      roomCode = res.code;
+      roomToken = res.token;
+      roomRole = res.role || 'host';
+      renderMyCode();
+      setBadge('', 'Готов');
+      updateNetworkUi();
+      scheduleNextPoll();
+    } catch (err) {
+      if (err.status === 401) {
+        setBadge('error', 'Нужен код доступа');
+        openNetworkModal();
+        showToast('Введи код доступа в разделе «Сеть»', 'error');
+      } else {
+        setBadge('error', 'Нет связи с релеем');
+        showToast(err.message || 'Ошибка подключения к релею', 'error');
+      }
     }
-
-    const instance = new Peer(peerId, opts);
-    peer = instance;
-
-    instance.on('open', () => {
-      if (peer !== instance) return;
-      if (!activeConn) setBadge('', 'Готов');
-      if (pendingAutoConnectCode) {
-        const target = pendingAutoConnectCode;
-        pendingAutoConnectCode = '';
-        remoteCodeInput.value = formatCode(target);
-        connectToCode(target);
-      }
-    });
-
-    instance.on('connection', (conn) => {
-      if (peer !== instance) return;
-      if (activeConn) {
-        rejectExtraConnection(conn);
-        return;
-      }
-      attachDataChannelEvents(conn);
-    });
-
-    instance.on('error', (err) => {
-      if (peer !== instance) return;
-      const type = err && err.type ? err.type : '';
-
-      if (type === 'unavailable-id' && peerRetries < 3) {
-        peerRetries += 1;
-        myCode = generateSixDigitCode();
-        renderMyCode();
-        try { instance.destroy(); } catch {}
-        initPeer();
-        return;
-      }
-
-      if (type === 'peer-unavailable') {
-        if (activeConn && !activeConn.open) {
-          try { activeConn.close(); } catch {}
-          activeConn = null;
-        }
-        resetConnectionControls();
-        setBadge('', 'Готов');
-        showToast('Код не найден или устройство не в сети', 'error');
-        return;
-      }
-
-      if (!activeConn || !activeConn.open) {
-        resetConnectionControls();
-        setBadge('error', 'Ошибка сети');
-      }
-      showToast(err && err.message ? err.message : 'Сбой подключения', 'error');
-    });
-
-    instance.on('disconnected', () => {
-      if (peer !== instance || isDisconnecting) return;
-      if (!activeConn) setBadge('pending', 'Переподключение…');
-      try { instance.reconnect(); } catch {}
-    });
   }
 
-  function connectToCode(rawCode) {
+  async function joinRoom(rawCode) {
     const code = normalizeCode(rawCode);
     if (!code) {
       showToast('Введи 6-значный код собеседника', 'error');
       return;
     }
-    if (code === myCode) {
+    if (code === roomCode && roomCode) {
       showToast('Это твой собственный код', 'error');
       return;
     }
-    if (!peer || peer.destroyed) {
-      pendingAutoConnectCode = code;
-      showToast('Ожидаем готовность сети…');
-      return;
-    }
-    if (activeConn) {
-      showToast('Сначала отключи текущую пару', 'error');
+    if (!getRelayUrl()) {
+      openNetworkModal();
+      showToast('Сначала укажи Relay URL в разделе «Сеть»', 'error');
       return;
     }
 
-    setBadge('pending', 'Подключение…');
+    const prevCode = roomCode;
+    const prevToken = roomToken;
+
     connectBtn.disabled = true;
     connectBtn.textContent = 'Связь…';
+    setBadge('pending', 'Подключение…');
 
-    const conn = peer.connect(config.peerPrefix + code, {
-      reliable: true,
-      serialization: 'raw'
-    });
-    attachDataChannelEvents(conn);
-
-    connectTimer = setTimeout(() => {
-      if (activeConn === conn && !conn.open) {
-        try { conn.close(); } catch {}
-        activeConn = null;
-        resetConnectionControls();
-        setBadge('', 'Готов');
-        showToast('Не удалось соединиться — проверь код или TURN', 'error');
+    try {
+      const res = await relayCall('join', { code, device: getDeviceLabel() });
+      if (prevCode && prevToken && prevCode !== code) {
+        relayCall('close', { code: prevCode, token: prevToken }).catch(() => {});
       }
-    }, CONNECT_TIMEOUT_MS);
+      resetRoomState();
+      roomCode = res.code;
+      roomToken = res.token;
+      roomRole = res.role || 'guest';
+      remoteDeviceName = res.peerDevice || 'Устройство';
+      isPaired = true;
+      renderMyCode();
+      updateConnectedUi();
+      showToast('Устройства связаны', 'success');
+      scheduleNextPoll();
+    } catch (err) {
+      if (err.status === 409) {
+        showToast('Устройство уже занято другой сессией', 'error');
+      } else if (err.status === 404) {
+        showToast('Код не найден или комната закрыта', 'error');
+      } else if (err.status === 401) {
+        openNetworkModal();
+        showToast('Нужен код доступа в разделе «Сеть»', 'error');
+      } else {
+        showToast(err.message || 'Не удалось подключиться', 'error');
+      }
+      setBadge(roomCode ? '' : 'error', roomCode ? 'Готов' : 'Ошибка');
+    } finally {
+      connectBtn.disabled = false;
+      connectBtn.textContent = 'Подключиться';
+    }
   }
 
-  function disconnectSession() {
-    if (activeConn && activeConn.open) {
-      try {
-        activeConn.send(JSON.stringify({ type: 'bye' }));
-      } catch {}
+  async function pollRoom() {
+    if (!roomCode || !roomToken || pollInFlight) return;
+    pollInFlight = true;
+    const currentCode = roomCode;
+    try {
+      const data = await relayCall('poll', { code: roomCode, token: roomToken, cursor: eventCursor });
+      if (roomCode !== currentCode) return;
+
+      if (data.closed) {
+        showToast('Собеседник отключился');
+        await createRoom();
+        return;
+      }
+
+      if (data.connected && !isPaired) {
+        isPaired = true;
+        remoteDeviceName = data.peerDevice || 'Устройство';
+        updateConnectedUi();
+        showToast('Устройства связаны', 'success');
+      } else if (data.connected && data.peerDevice && data.peerDevice !== remoteDeviceName) {
+        remoteDeviceName = data.peerDevice;
+        updateConnectedUi();
+      }
+
+      if (data.cursor) eventCursor = data.cursor;
+      if (Array.isArray(data.events)) {
+        for (const ev of data.events) {
+          if (!ev || !ev.id || seenEventIds.has(ev.id)) continue;
+          seenEventIds.add(ev.id);
+          if (ev.sender === roomRole) continue;
+          handleIncomingEvent(ev);
+        }
+      }
+    } catch (err) {
+      if (roomCode === currentCode && err.status === 404) {
+        showToast('Комната закрыта собеседником');
+        await createRoom();
+        return;
+      }
+    } finally {
+      pollInFlight = false;
+      if (roomCode === currentCode) {
+        scheduleNextPoll();
+      }
     }
-    rotateCodeAndReinit();
-    showToast('Отключено, выдан новый код');
+  }
+
+  async function disconnectSession() {
+    const code = roomCode;
+    const token = roomToken;
+    resetRoomState();
+    if (code && token) {
+      await relayCall('close', { code, token }).catch(() => {});
+    }
+    showToast('Отключено, файлы удалены, выдан новый код');
+    await createRoom();
   }
 
   // ---------- Лента передач ----------
 
-  function triggerDownload(objectUrl, filename) {
+  function triggerDownload(url, filename) {
     const link = document.createElement('a');
-    link.href = objectUrl;
+    link.href = url;
     link.download = filename;
     link.rel = 'noopener';
     document.body.appendChild(link);
@@ -733,14 +573,14 @@ function initApp() {
   function createFileFeedEntry(direction, name, size) {
     itemCounter += 1;
     const id = `item-${itemCounter}`;
-    const statusEl = el('span', { class: 'file-status uploading', text: direction === 'out' ? 'В очереди' : 'Приём…' });
+    const statusEl = el('span', { class: 'file-status uploading', text: direction === 'out' ? 'В очереди' : 'Получено' });
     const progressBar = el('div', { class: 'progress-bar' });
     const progressWrap = el('div', { class: 'progress' }, progressBar);
-    const metaEl = el('div', { class: 'transfer-meta' },
-      el('span', { class: 'file-size', text: formatSize(size) })
-    );
     const speedEl = el('span', { class: 'file-speed' });
-    metaEl.appendChild(speedEl);
+    const metaEl = el('div', { class: 'transfer-meta' },
+      el('span', { class: 'file-size', text: formatSize(size) }),
+      speedEl
+    );
 
     const actionsEl = el('div', { class: 'file-actions' }, statusEl);
     const li = el('li', { class: 'transfer-item' },
@@ -764,16 +604,12 @@ function initApp() {
       name,
       size,
       state: 'active',
-      objectUrl: null,
+      downloadUrl: null,
       saved: false,
       setProgress(percent, speedBytesPerSec) {
         const pct = Math.max(0, Math.min(100, percent));
         progressBar.style.width = `${pct}%`;
-        if (speedBytesPerSec > 0 && pct < 100) {
-          speedEl.textContent = formatSpeed(speedBytesPerSec);
-        } else {
-          speedEl.textContent = '';
-        }
+        speedEl.textContent = speedBytesPerSec > 0 && pct < 100 ? formatSpeed(speedBytesPerSec) : '';
       },
       setStatus(kind, text) {
         statusEl.className = `file-status ${kind}`;
@@ -785,15 +621,15 @@ function initApp() {
           progressWrap.hidden = true;
         }
       },
-      attachDownload(objectUrl, autoSaved) {
-        entry.objectUrl = objectUrl;
+      attachDownload(downloadUrl, autoSaved) {
+        entry.downloadUrl = downloadUrl;
         entry.saved = Boolean(autoSaved);
         const btn = el('button', {
           type: 'button',
           class: 'item-action-btn',
           text: autoSaved ? 'Ещё раз' : 'Сохранить',
           onClick: () => {
-            triggerDownload(objectUrl, name);
+            triggerDownload(downloadUrl, name);
             entry.saved = true;
             btn.textContent = 'Ещё раз';
             entry.setStatus('success', 'Сохранено');
@@ -842,20 +678,37 @@ function initApp() {
     );
 
     transferList.prepend(li);
-    feedEntries.push({ kind: 'text', direction, objectUrl: null });
+    feedEntries.push({ kind: 'text', direction, downloadUrl: null });
     updateFeedControls();
+  }
+
+  function handleIncomingEvent(ev) {
+    if (ev.kind === 'text' && ev.text) {
+      addTextFeedEntry('in', String(ev.text).slice(0, MAX_TEXT_CHARS));
+      showToast('Получено сообщение');
+      return;
+    }
+    if (ev.kind === 'file' && ev.downloadUrl) {
+      const name = sanitizeFilename(ev.name);
+      const entry = createFileFeedEntry('in', name, Number(ev.size) || 0);
+      const shouldAutoSave = (Number(ev.batchTotal) || 1) <= 1 && autoSaveToggle.checked;
+      entry.attachDownload(ev.downloadUrl, shouldAutoSave);
+      if (shouldAutoSave) {
+        triggerDownload(ev.downloadUrl, name);
+      }
+    }
   }
 
   async function saveAllPending() {
     const targets = feedEntries.filter(
-      (entry) => entry.kind === 'file' && entry.direction === 'in' && entry.objectUrl && !entry.saved
+      (entry) => entry.kind === 'file' && entry.direction === 'in' && entry.downloadUrl && !entry.saved
     );
     if (!targets.length) return;
 
     saveAllBtn.disabled = true;
     for (let i = 0; i < targets.length; i += 1) {
       const entry = targets[i];
-      triggerDownload(entry.objectUrl, entry.name);
+      triggerDownload(entry.downloadUrl, entry.name);
       entry.saved = true;
       entry.setStatus('success', 'Сохранено');
       if (i + 1 < targets.length) {
@@ -868,74 +721,52 @@ function initApp() {
 
   function clearFeed() {
     for (let i = feedEntries.length - 1; i >= 0; i -= 1) {
-      const entry = feedEntries[i];
-      if (entry.state === 'active') continue;
-      if (entry.objectUrl) {
-        try { URL.revokeObjectURL(entry.objectUrl); } catch {}
-      }
+      if (feedEntries[i].state === 'active') continue;
       feedEntries.splice(i, 1);
     }
-    const keptActive = feedEntries.length > 0;
-    if (!keptActive) {
+    if (feedEntries.length === 0) {
       transferList.replaceChildren();
     } else {
-      const nodes = Array.from(transferList.children);
-      for (const node of nodes) {
+      for (const node of Array.from(transferList.children)) {
         if (!node.querySelector('.uploading')) node.remove();
       }
     }
     updateFeedControls();
   }
 
-  // ---------- Передача файлов (64 КБ чанки + backpressure) ----------
+  // ---------- Прямая загрузка в Object Storage (XMLHttpRequest PUT) ----------
 
-  function waitForDrain(conn) {
-    const dc = conn && conn.dataChannel;
-    if (!dc || dc.readyState !== 'open') return Promise.resolve(false);
-    if (dc.bufferedAmount <= HIGH_WATERMARK) return Promise.resolve(true);
+  function uploadFileDirect(uploadUrl, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      activeXhr = xhr;
+      const startedAt = performance.now();
+      let lastUiAt = 0;
 
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = (ok) => {
-        if (settled) return;
-        settled = true;
-        clearInterval(poll);
-        dc.removeEventListener('bufferedamountlow', onLow);
-        dc.removeEventListener('close', onClose);
-        resolve(ok);
-      };
-      const onLow = () => {
-        if (dc.bufferedAmount <= LOW_WATERMARK) done(true);
-      };
-      const onClose = () => done(false);
-      const poll = setInterval(() => {
-        if (dc.readyState !== 'open') done(false);
-        else if (dc.bufferedAmount <= LOW_WATERMARK) done(true);
-      }, 50);
-
-      try { dc.bufferedAmountLowThreshold = LOW_WATERMARK; } catch {}
-      dc.addEventListener('bufferedamountlow', onLow);
-      dc.addEventListener('close', onClose);
-    });
-  }
-
-  function waitForAck(fileId) {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        if (pendingAckResolver === finish) pendingAckResolver = null;
-        resolve(false);
-      }, ACK_TIMEOUT_MS);
-
-      const finish = (ok) => {
-        clearTimeout(timer);
-        resolve(ok);
-      };
-      pendingAckResolver = (ackId) => {
-        if (ackId === fileId) {
-          pendingAckResolver = null;
-          finish(true);
+      xhr.open('PUT', uploadUrl, true);
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const now = performance.now();
+        if (now - lastUiAt >= 100 || e.loaded === e.total) {
+          lastUiAt = now;
+          const elapsedSec = Math.max(0.05, (now - startedAt) / 1000);
+          onProgress((e.loaded / e.total) * 100, e.loaded / elapsedSec);
         }
       };
+      xhr.onload = () => {
+        activeXhr = null;
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(`Ошибка загрузки S3 (HTTP ${xhr.status})`));
+      };
+      xhr.onerror = () => {
+        activeXhr = null;
+        reject(new Error('Сбой сети при загрузке файла'));
+      };
+      xhr.onabort = () => {
+        activeXhr = null;
+        reject(new Error('Отменено'));
+      };
+      xhr.send(file);
     });
   }
 
@@ -945,60 +776,36 @@ function initApp() {
 
     while (sendQueue.length > 0) {
       const job = sendQueue.shift();
-      const conn = activeConn;
-      if (!conn || !conn.open) {
+      if (!isPaired || !roomCode || !roomToken) {
         job.entry.setStatus('error', 'Нет связи');
         continue;
       }
 
       const file = job.file;
       const safeName = sanitizeFilename(file.name);
-      const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
       try {
-        job.entry.setStatus('uploading', 'Отправка…');
-        conn.send(JSON.stringify({
-          type: 'file-start',
-          id: fileId,
+        job.entry.setStatus('uploading', 'Загрузка…');
+        const presign = await relayCall('presign-upload', {
+          code: roomCode,
+          token: roomToken,
+          size: file.size
+        });
+        await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
+          job.entry.setProgress(pct, speed);
+        });
+        await relayCall('commit-file', {
+          code: roomCode,
+          token: roomToken,
+          fileId: presign.fileId,
           name: safeName,
           size: file.size,
           mime: file.type || 'application/octet-stream',
           batchTotal: job.batchTotal,
           batchIndex: job.batchIndex
-        }));
-
-        let offset = 0;
-        let lastUiAt = 0;
-        const startedAt = performance.now();
-
-        while (offset < file.size) {
-          if (activeConn !== conn || !conn.open) {
-            throw new Error('Связь прервана');
-          }
-          const ok = await waitForDrain(conn);
-          if (!ok || activeConn !== conn || !conn.open) {
-            throw new Error('Канал закрыт');
-          }
-
-          const end = Math.min(file.size, offset + config.chunkSize);
-          const buffer = await file.slice(offset, end).arrayBuffer();
-          conn.send(buffer);
-          offset = end;
-
-          const now = performance.now();
-          if (now - lastUiAt >= 100 || offset === file.size) {
-            lastUiAt = now;
-            const elapsedSec = Math.max(0.05, (now - startedAt) / 1000);
-            const pct = file.size ? (offset / file.size) * 100 : 100;
-            job.entry.setProgress(pct, offset / elapsedSec);
-          }
-        }
-
-        const ackPromise = waitForAck(fileId);
-        conn.send(JSON.stringify({ type: 'file-end', id: fileId }));
-        const acked = await ackPromise;
+        });
+        seenEventIds.add(presign.fileId);
         job.entry.setProgress(100, 0);
-        job.entry.setStatus('success', acked ? 'Доставлено' : 'Отправлено');
+        job.entry.setStatus('success', 'Доставлено');
       } catch (err) {
         job.entry.setStatus('error', err && err.message ? err.message : 'Ошибка');
       }
@@ -1010,15 +817,15 @@ function initApp() {
   function queueFiles(rawFiles) {
     const files = Array.from(rawFiles || []);
     if (!files.length) return;
-    if (!activeConn || !activeConn.open) {
+    if (!isPaired) {
       showToast('Сначала подключи второе устройство', 'error');
       return;
     }
 
     const valid = [];
     for (const file of files) {
-      if (file.size > MAX_FILE_BYTES) {
-        showToast(`${sanitizeFilename(file.name)} превышает лимит 300 МБ`, 'error');
+      if (file.size > config.maxFileBytes) {
+        showToast(`${sanitizeFilename(file.name)} превышает лимит ${formatSize(config.maxFileBytes)}`, 'error');
       } else {
         valid.push(file);
       }
@@ -1028,168 +835,30 @@ function initApp() {
     const batchTotal = valid.length;
     valid.forEach((file, idx) => {
       const entry = createFileFeedEntry('out', sanitizeFilename(file.name), file.size);
-      sendQueue.push({
-        file,
-        entry,
-        batchTotal,
-        batchIndex: idx + 1
-      });
+      sendQueue.push({ file, entry, batchTotal, batchIndex: idx + 1 });
     });
 
     processSendQueue();
   }
 
-  function sendQuickText() {
+  async function sendQuickText() {
     const text = textInput.value.trim();
     if (!text) return;
-    if (!activeConn || !activeConn.open) {
+    if (!isPaired) {
       showToast('Сначала подключи второе устройство', 'error');
       return;
     }
     const clipped = text.slice(0, MAX_TEXT_CHARS);
+    sendTextBtn.disabled = true;
     try {
-      activeConn.send(JSON.stringify({ type: 'text', text: clipped }));
+      const res = await relayCall('send-text', { code: roomCode, token: roomToken, text: clipped });
+      if (res.id) seenEventIds.add(res.id);
       addTextFeedEntry('out', clipped);
       textInput.value = '';
-      sendTextBtn.disabled = true;
     } catch {
       showToast('Не удалось отправить текст', 'error');
+      sendTextBtn.disabled = false;
     }
-  }
-
-  // ---------- Приём входящих сообщений ----------
-
-  function appendBinaryChunk(rawChunk) {
-    if (!incomingTransfer) return;
-    let buf = null;
-    if (rawChunk instanceof ArrayBuffer) {
-      buf = rawChunk;
-    } else if (ArrayBuffer.isView(rawChunk)) {
-      buf = rawChunk.buffer.slice(rawChunk.byteOffset, rawChunk.byteOffset + rawChunk.byteLength);
-    } else if (rawChunk instanceof Blob) {
-      rawChunk.arrayBuffer().then((ab) => appendBinaryChunk(ab)).catch(() => {});
-      return;
-    } else {
-      return;
-    }
-
-    if (incomingTransfer.received + buf.byteLength > MAX_FILE_BYTES) {
-      incomingTransfer.entry.setStatus('error', 'Превышен лимит 300 МБ');
-      incomingTransfer.chunks = null;
-      incomingTransfer = null;
-      return;
-    }
-
-    incomingTransfer.chunks.push(buf);
-    incomingTransfer.received += buf.byteLength;
-
-    const now = performance.now();
-    if (now - incomingTransfer.lastUiAt >= 100 || incomingTransfer.received >= incomingTransfer.size) {
-      incomingTransfer.lastUiAt = now;
-      const elapsedSec = Math.max(0.05, (now - incomingTransfer.startedAt) / 1000);
-      const pct = incomingTransfer.size ? (incomingTransfer.received / incomingTransfer.size) * 100 : 100;
-      incomingTransfer.entry.setProgress(pct, incomingTransfer.received / elapsedSec);
-    }
-  }
-
-  function handleControlMessage(msg) {
-    if (!msg || typeof msg.type !== 'string') return;
-
-    if (msg.type === 'hello') {
-      remoteDeviceName = String(msg.device || 'Устройство').slice(0, 24);
-      updateConnectedUi(true);
-      return;
-    }
-
-    if (msg.type === 'busy') {
-      showToast('Устройство уже занято другой сессией', 'error');
-      const old = activeConn;
-      activeConn = null;
-      if (old) {
-        try { old.close(); } catch {}
-      }
-      resetConnectionControls();
-      updateConnectedUi(false);
-      setBadge('', 'Готов');
-      return;
-    }
-
-    if (msg.type === 'bye') {
-      showToast('Собеседник отключился');
-      rotateCodeAndReinit();
-      return;
-    }
-
-    if (msg.type === 'text') {
-      const text = String(msg.text || '').trim().slice(0, MAX_TEXT_CHARS);
-      if (text) {
-        addTextFeedEntry('in', text);
-        showToast('Получено сообщение');
-      }
-      return;
-    }
-
-    if (msg.type === 'file-ack') {
-      if (pendingAckResolver) pendingAckResolver(msg.id);
-      return;
-    }
-
-    if (msg.type === 'file-start') {
-      const size = Number(msg.size) || 0;
-      const safeName = sanitizeFilename(msg.name);
-      if (size < 0 || size > MAX_FILE_BYTES) {
-        showToast(`Отклонён слишком большой файл: ${safeName}`, 'error');
-        return;
-      }
-      const entry = createFileFeedEntry('in', safeName, size);
-      incomingTransfer = {
-        id: msg.id,
-        name: safeName,
-        size,
-        mime: String(msg.mime || 'application/octet-stream'),
-        batchTotal: Number(msg.batchTotal) || 1,
-        chunks: [],
-        received: 0,
-        startedAt: performance.now(),
-        lastUiAt: 0,
-        entry
-      };
-      return;
-    }
-
-    if (msg.type === 'file-end') {
-      if (!incomingTransfer || incomingTransfer.id !== msg.id) return;
-      const done = incomingTransfer;
-      incomingTransfer = null;
-
-      const blob = new Blob(done.chunks, { type: done.mime });
-      done.chunks = null;
-      const objectUrl = URL.createObjectURL(blob);
-      const shouldAutoSave = done.batchTotal <= 1 && autoSaveToggle.checked;
-
-      done.entry.attachDownload(objectUrl, shouldAutoSave);
-      if (shouldAutoSave) {
-        triggerDownload(objectUrl, done.name);
-      }
-
-      if (activeConn && activeConn.open) {
-        try {
-          activeConn.send(JSON.stringify({ type: 'file-ack', id: done.id }));
-        } catch {}
-      }
-    }
-  }
-
-  function handleIncomingPayload(raw) {
-    if (typeof raw === 'string') {
-      try {
-        handleControlMessage(JSON.parse(raw));
-      } catch {
-        // Игнорируем некорректный JSON
-      }
-      return;
-    }
-    appendBinaryChunk(raw);
   }
 
   // ---------- Модалки, QR и ленивый сканер ----------
@@ -1204,14 +873,27 @@ function initApp() {
     modal.setAttribute('aria-hidden', 'true');
   }
 
+  function openNetworkModal() {
+    relayUrlInput.value = getRelayUrl();
+    accessKeyInput.value = getAccessKey();
+    relayTestStatus.className = 'health-status';
+    relayTestStatus.textContent = '';
+    updateNetworkUi();
+    openModal(networkModal);
+  }
+
   function renderMyQr() {
     qrCodeWrap.replaceChildren();
+    if (!roomCode) {
+      qrCodeWrap.textContent = 'Код ещё не создан';
+      return;
+    }
     if (typeof QRCode === 'undefined') {
       qrCodeWrap.textContent = 'Модуль QR не загрузился';
       return;
     }
     new QRCode(qrCodeWrap, {
-      text: buildShareUrl(myCode),
+      text: buildShareUrl(roomCode),
       width: 216,
       height: 216,
       colorDark: '#111110',
@@ -1244,9 +926,7 @@ function initApp() {
     const instance = qrScanner;
     qrScanner = null;
     try {
-      if (instance.isScanning) {
-        await instance.stop();
-      }
+      if (instance.isScanning) await instance.stop();
     } catch {}
     try {
       await instance.clear();
@@ -1262,9 +942,7 @@ function initApp() {
       if (currentSession !== scannerSessionId || qrScanPanel.hidden || !qrModal.classList.contains('active')) {
         return;
       }
-      if (typeof Html5Qrcode === 'undefined') {
-        throw new Error('Сканер недоступен');
-      }
+      if (typeof Html5Qrcode === 'undefined') throw new Error('Сканер недоступен');
 
       scanStatus.textContent = 'Запуск камеры…';
       qrReader.replaceChildren();
@@ -1283,7 +961,7 @@ function initApp() {
           stopQrScanner();
           closeModal(qrModal);
           remoteCodeInput.value = formatCode(code);
-          connectToCode(code);
+          joinRoom(code);
         },
         () => {}
       );
@@ -1330,66 +1008,47 @@ function initApp() {
   qrTabMine.addEventListener('click', () => switchQrTab('mine'));
   qrTabScan.addEventListener('click', () => switchQrTab('scan'));
 
-  qrCopyLinkBtn.addEventListener('click', () => copyText(buildShareUrl(myCode), 'Ссылка скопирована'));
-  copyCodeBtn.addEventListener('click', () => copyText(myCode, 'Код скопирован'));
-  copyLinkBtn.addEventListener('click', () => copyText(buildShareUrl(myCode), 'Ссылка скопирована'));
-
-  networkBtn.addEventListener('click', () => {
-    turnProxyInput.value = getSessionTurnUrl() || config.turnProxyUrl;
-    turnTestStatus.className = 'health-status';
-    turnTestStatus.textContent = '';
-    updateNetworkUi();
-    openModal(networkModal);
+  qrCopyLinkBtn.addEventListener('click', () => {
+    if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
   });
+  copyCodeBtn.addEventListener('click', () => {
+    if (roomCode) copyText(roomCode, 'Код скопирован');
+  });
+  copyLinkBtn.addEventListener('click', () => {
+    if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
+  });
+
+  networkBtn.addEventListener('click', openNetworkModal);
   closeNetworkBtn.addEventListener('click', () => closeModal(networkModal));
 
-  applyTurnBtn.addEventListener('click', async () => {
-    const val = turnProxyInput.value.trim();
-    if (val && !parseSafeHttpUrl(val)) {
-      turnTestStatus.className = 'health-status error';
-      turnTestStatus.textContent = 'Укажи корректный https:// или http:// адрес';
+  applyRelayBtn.addEventListener('click', async () => {
+    const urlVal = relayUrlInput.value.trim();
+    if (urlVal && !parseSafeHttpUrl(urlVal)) {
+      relayTestStatus.className = 'health-status error';
+      relayTestStatus.textContent = 'Укажи корректный https:// или http:// адрес';
       return;
     }
-
-    applyTurnBtn.disabled = true;
-    turnTestStatus.className = 'health-status';
-    turnTestStatus.textContent = val ? 'Проверка TURN-прокси…' : 'Сброс к STUN…';
-
-    setSessionTurnUrl(val);
-    const result = await loadIceServers(getEffectiveTurnProxyUrl());
-    applyTurnBtn.disabled = false;
-
-    if (!result.ok) {
-      turnTestStatus.className = 'health-status error';
-      turnTestStatus.textContent = `Ошибка: ${result.error}. Оставлен STUN.`;
-      return;
-    }
-
-    turnTestStatus.className = 'health-status success';
-    turnTestStatus.textContent = result.usedTurn ? 'TURN активен для этой вкладки' : 'Используется STUN';
-
-    if (!activeConn) {
-      rotateCodeAndReinit();
-    } else {
-      showToast('TURN обновлён и применится со следующей сессии');
-    }
+    writeSession(SESSION_RELAY_KEY, urlVal === config.relayUrl ? '' : urlVal);
+    writeSession(SESSION_ACCESS_KEY, accessKeyInput.value.trim());
+    closeModal(networkModal);
+    await createRoom();
   });
 
-  resetTurnBtn.addEventListener('click', async () => {
-    setSessionTurnUrl('');
-    turnProxyInput.value = config.turnProxyUrl;
-    const result = await loadIceServers(getEffectiveTurnProxyUrl());
-    turnTestStatus.className = 'health-status success';
-    turnTestStatus.textContent = result.usedTurn ? 'Возвращён TURN из config.js' : 'Сброшено на STUN';
-    if (!activeConn) rotateCodeAndReinit();
+  resetRelayBtn.addEventListener('click', async () => {
+    writeSession(SESSION_RELAY_KEY, '');
+    writeSession(SESSION_ACCESS_KEY, '');
+    relayUrlInput.value = config.relayUrl;
+    accessKeyInput.value = '';
+    relayTestStatus.className = 'health-status success';
+    relayTestStatus.textContent = 'Настройки сессии сброшены';
+    await createRoom();
   });
 
   disconnectBtn.addEventListener('click', disconnectSession);
   barDisconnectBtn.addEventListener('click', disconnectSession);
 
   remoteCodeInput.addEventListener('input', () => {
-    const raw = remoteCodeInput.value;
-    const digits = raw.replace(/\D+/g, '').slice(0, 6);
+    const digits = remoteCodeInput.value.replace(/\D+/g, '').slice(0, 6);
     remoteCodeInput.value = digits.length > 3 ? `${digits.slice(0, 3)}-${digits.slice(3)}` : digits;
   });
 
@@ -1405,11 +1064,11 @@ function initApp() {
   remoteCodeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      connectToCode(remoteCodeInput.value);
+      joinRoom(remoteCodeInput.value);
     }
   });
 
-  connectBtn.addEventListener('click', () => connectToCode(remoteCodeInput.value));
+  connectBtn.addEventListener('click', () => joinRoom(remoteCodeInput.value));
 
   browseBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1433,22 +1092,15 @@ function initApp() {
     e.preventDefault();
     dropZone.classList.add('dragover');
   });
-
-  dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('dragover');
-  });
-
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
   dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
-    if (e.dataTransfer && e.dataTransfer.files) {
-      queueFiles(e.dataTransfer.files);
-    }
+    if (e.dataTransfer && e.dataTransfer.files) queueFiles(e.dataTransfer.files);
   });
 
   textInput.addEventListener('input', () => {
-    const connected = Boolean(activeConn && activeConn.open);
-    sendTextBtn.disabled = !connected || !textInput.value.trim();
+    sendTextBtn.disabled = !isPaired || !textInput.value.trim();
   });
 
   textInput.addEventListener('keydown', (e) => {
@@ -1462,7 +1114,6 @@ function initApp() {
   saveAllBtn.addEventListener('click', saveAllPending);
   clearFeedBtn.addEventListener('click', clearFeed);
 
-  // Закрытие модалок по клику на оверлей и Esc
   qrModal.addEventListener('click', (e) => {
     if (e.target === qrModal) closeQrModal();
   });
@@ -1475,7 +1126,10 @@ function initApp() {
     if (networkModal.classList.contains('active')) closeModal(networkModal);
   });
 
-  // Глобальный Ctrl+V для файлов/скриншотов и быстрого текста
+  document.addEventListener('visibilitychange', () => {
+    if (roomCode && roomToken) scheduleNextPoll();
+  });
+
   document.addEventListener('paste', (e) => {
     const dt = e.clipboardData;
     if (!dt) return;
@@ -1505,8 +1159,7 @@ function initApp() {
     }
 
     const active = document.activeElement;
-    const isEditing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-    if (isEditing) return;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
 
     const text = dt.getData('text');
     if (text && text.trim()) {
@@ -1519,13 +1172,17 @@ function initApp() {
 
   window.addEventListener('pagehide', () => {
     stopQrScanner();
-    for (const entry of feedEntries) {
-      if (entry.objectUrl) {
-        try { URL.revokeObjectURL(entry.objectUrl); } catch {}
-      }
-    }
-    if (activeConn && activeConn.open) {
-      try { activeConn.send(JSON.stringify({ type: 'bye' })); } catch {}
+    stopPolling();
+    const url = getRelayUrl();
+    if (url && roomCode && roomToken) {
+      try {
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'close', code: roomCode, token: roomToken }),
+          keepalive: true
+        }).catch(() => {});
+      } catch {}
     }
   });
 
@@ -1535,16 +1192,18 @@ function initApp() {
     const params = new URLSearchParams(location.search);
     const toCode = normalizeCode(params.get('to'));
     if (toCode) {
-      pendingAutoConnectCode = toCode;
       history.replaceState(null, '', location.pathname + location.hash);
     }
 
-    renderMyCode();
-    updateConnectedUi(false);
+    updateConnectedUi();
     updateFeedControls();
 
-    await loadIceServers(getEffectiveTurnProxyUrl());
-    initPeer();
+    if (toCode) {
+      remoteCodeInput.value = formatCode(toCode);
+      await joinRoom(toCode);
+    } else {
+      await createRoom();
+    }
   }
 
   boot();
@@ -1556,7 +1215,6 @@ if (typeof document !== 'undefined') {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    generateSixDigitCode,
     normalizeCode,
     formatCode,
     extractCodeFromInput,
