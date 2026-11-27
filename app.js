@@ -402,7 +402,7 @@ function initApp() {
     updateConnectedUi();
   }
 
-  async function createRoom(promptOn401 = false) {
+  async function createRoom(showErrorOn401 = false) {
     resetRoomState();
     const url = getRelayUrl();
     if (!url) {
@@ -424,9 +424,8 @@ function initApp() {
         setBadge('pending', 'Нужен ключ');
         myCodeDisplay.textContent = 'Введи ключ';
         copyCodeBtn.textContent = 'Ключ';
-        if (promptOn401) {
-          openNetworkModal();
-          accessKeyInput.focus();
+        openNetworkModal();
+        if (showErrorOn401) {
           showToast('Неверный код доступа', 'error');
         }
       } else {
