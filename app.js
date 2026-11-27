@@ -161,6 +161,7 @@ function initApp() {
 
   let pollTimer = null;
   let pollInFlight = false;
+  let needsReconnectOnVisible = false;
   let activeXhr = null;
   let activeJob = null;
   const sendQueue = [];
@@ -427,6 +428,7 @@ function initApp() {
   }
 
   async function createRoom(showErrorOn401 = false) {
+    needsReconnectOnVisible = false;
     resetRoomState();
     const url = getRelayUrl();
     if (!url) {
@@ -488,6 +490,7 @@ function initApp() {
         relayCall('close', { code: prevCode, token: prevToken }).catch(() => {});
       }
       resetRoomState();
+      needsReconnectOnVisible = false;
       roomCode = res.code;
       roomToken = res.token;
       roomRole = res.role || 'guest';
@@ -525,6 +528,12 @@ function initApp() {
       if (roomCode !== currentCode) return;
 
       if (data.closed) {
+        if (document.hidden) {
+          resetRoomState();
+          needsReconnectOnVisible = true;
+          setBadge('pending', 'Пауза');
+          return;
+        }
         showToast(data.expired ? 'Комната истекла, создаём новую' : 'Собеседник отключился');
         await createRoom();
         return;
@@ -552,6 +561,12 @@ function initApp() {
       }
     } catch (err) {
       if (roomCode === currentCode && err.status === 404) {
+        if (document.hidden) {
+          resetRoomState();
+          needsReconnectOnVisible = true;
+          setBadge('pending', 'Пауза');
+          return;
+        }
         showToast('Комната закрыта собеседником');
         await createRoom();
         return;
@@ -1330,6 +1345,11 @@ function initApp() {
       clearUnreadTitle();
       if (qrModal.classList.contains('active') && !qrScanPanel.hidden) {
         startQrScanner();
+      }
+      if (needsReconnectOnVisible && !roomCode) {
+        needsReconnectOnVisible = false;
+        createRoom();
+        return;
       }
     }
     if (roomCode && roomToken) scheduleNextPoll();

@@ -391,6 +391,7 @@ async function handler(event, _context, overrides = {}) {
         createdAt: Date.now(),
         fileCount: 0,
         eventCount: 0,
+        lastEventKey: '',
         totalBytes: 0,
         closed: false
       };
@@ -460,6 +461,12 @@ async function handler(event, _context, overrides = {}) {
         return response(200, { closed: false, connected: false, peerDevice: null, events: [], cursor }, corsHeaders);
       }
 
+      const peerDevice = role === 'host' ? meta.guestDevice : meta.hostDevice;
+      // Пропускаем S3 LIST, если событий нет или клиент уже дошёл до последнего ключа
+      if (!meta.eventCount || (cursor && meta.lastEventKey && cursor >= meta.lastEventKey)) {
+        return response(200, { closed: false, connected, peerDevice: peerDevice || null, events: [], cursor }, corsHeaders);
+      }
+
       const eventPrefix = `rooms/${code}/events/`;
       const keys = await s3ListKeys(ctx, eventPrefix);
       const newKeys = cursor ? keys.filter((k) => k > cursor) : keys;
@@ -483,7 +490,6 @@ async function handler(event, _context, overrides = {}) {
         events.push(item);
       }
 
-      const peerDevice = role === 'host' ? meta.guestDevice : meta.hostDevice;
       const nextCursor = events.length ? events[events.length - 1].cursor : cursor;
       return response(200, { closed: false, connected, peerDevice: peerDevice || null, events, cursor: nextCursor }, corsHeaders);
     }
@@ -500,6 +506,7 @@ async function handler(event, _context, overrides = {}) {
       const evKey = `rooms/${code}/events/${id}.json`;
       await s3PutJson(ctx, evKey, { id, kind: 'text', sender: role, text, ts: Date.now() });
       meta.eventCount = (meta.eventCount || 0) + 1;
+      if (!meta.lastEventKey || evKey > meta.lastEventKey) meta.lastEventKey = evKey;
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
       return response(200, { ok: true, id, cursor: evKey }, corsHeaders);
     }
@@ -571,6 +578,7 @@ async function handler(event, _context, overrides = {}) {
         ts: Date.now()
       });
       meta.eventCount = (meta.eventCount || 0) + 1;
+      if (!meta.lastEventKey || evKey > meta.lastEventKey) meta.lastEventKey = evKey;
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
       return response(200, { ok: true, id: fileId, cursor: evKey }, corsHeaders);
     }
