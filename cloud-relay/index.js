@@ -8,7 +8,13 @@ const S3_SERVICE = 's3';
 const MAX_FILE_BYTES = 300 * 1024 * 1024;
 const MAX_TEXT_CHARS = 32768;
 const UPLOAD_TTL_SEC = 300;
-const DOWNLOAD_TTL_SEC = 600;
+const DOWNLOAD_TTL_SEC = 120;
+const UNJOINED_ROOM_TTL_MS = 10 * 60 * 1000;
+const MAX_ROOM_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_ROOM_FILES = 50;
+const MAX_ROOM_EVENTS = 200;
+const MAX_ROOM_BYTES = 500 * 1024 * 1024;
+const DAILY_QUOTA_BYTES = 3 * 1024 * 1024 * 1024;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT_JOIN = 10;
 const RATE_LIMIT_GENERAL = 90;
@@ -296,6 +302,17 @@ function checkAccessKey(body, env) {
   return timingSafeHexEqual(sha256Hex(requiredKey), sha256Hex(provided));
 }
 
+function isRoomExpired(meta, now = Date.now()) {
+  if (!meta || !meta.createdAt) return true;
+  const age = now - Number(meta.createdAt);
+  if (!meta.guestTokenHash && age > UNJOINED_ROOM_TTL_MS) return true;
+  return age > MAX_ROOM_TTL_MS;
+}
+
+function todayQuotaKey(now = new Date()) {
+  return `rooms/_quota/${now.toISOString().slice(0, 10)}.json`;
+}
+
 async function handler(event, _context, overrides = {}) {
   const env = overrides.env || process.env;
   const fetchImpl = overrides.fetchImpl || fetch;
@@ -356,7 +373,8 @@ async function handler(event, _context, overrides = {}) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const candidate = generateSixDigitCode();
         const existing = await s3GetJson(ctx, `rooms/${candidate}/meta.json`);
-        if (!existing || existing.closed) {
+        if (!existing || existing.closed || isRoomExpired(existing)) {
+          if (existing) await s3DeletePrefix(ctx, `rooms/${candidate}/`).catch(() => {});
           code = candidate;
           break;
         }
@@ -371,6 +389,9 @@ async function handler(event, _context, overrides = {}) {
         hostDevice: device,
         guestDevice: null,
         createdAt: Date.now(),
+        fileCount: 0,
+        eventCount: 0,
+        totalBytes: 0,
         closed: false
       };
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
@@ -378,15 +399,16 @@ async function handler(event, _context, overrides = {}) {
     }
 
     if (action === 'join') {
-      if (!checkAccessKey(body, env)) {
-        return response(401, { error: 'Invalid access key' }, corsHeaders);
-      }
       const code = normalizeCode(body.code);
       if (!code) return response(400, { error: 'Invalid room code' }, corsHeaders);
 
       const meta = await s3GetJson(ctx, `rooms/${code}/meta.json`);
       if (!meta || meta.closed) {
         return response(404, { error: 'Room not found' }, corsHeaders);
+      }
+      if (isRoomExpired(meta)) {
+        await s3DeletePrefix(ctx, `rooms/${code}/`).catch(() => {});
+        return response(404, { error: 'Room expired' }, corsHeaders);
       }
       if (meta.guestTokenHash) {
         return response(409, { error: 'Room is busy' }, corsHeaders);
@@ -423,8 +445,21 @@ async function handler(event, _context, overrides = {}) {
       return response(200, { closed: true, connected: false, events: [] }, corsHeaders);
     }
 
+    if (isRoomExpired(meta)) {
+      await s3DeletePrefix(ctx, `rooms/${code}/`).catch(() => {});
+      if (action === 'poll') {
+        return response(200, { closed: true, expired: true, connected: false, events: [] }, corsHeaders);
+      }
+      return response(404, { error: 'Room expired' }, corsHeaders);
+    }
+
     if (action === 'poll') {
       const cursor = String(body.cursor || '');
+      const connected = Boolean(meta.guestTokenHash);
+      if (!connected) {
+        return response(200, { closed: false, connected: false, peerDevice: null, events: [], cursor }, corsHeaders);
+      }
+
       const eventPrefix = `rooms/${code}/events/`;
       const keys = await s3ListKeys(ctx, eventPrefix);
       const newKeys = cursor ? keys.filter((k) => k > cursor) : keys;
@@ -448,7 +483,6 @@ async function handler(event, _context, overrides = {}) {
         events.push(item);
       }
 
-      const connected = Boolean(meta.guestTokenHash);
       const peerDevice = role === 'host' ? meta.guestDevice : meta.hostDevice;
       const nextCursor = events.length ? events[events.length - 1].cursor : cursor;
       return response(200, { closed: false, connected, peerDevice: peerDevice || null, events, cursor: nextCursor }, corsHeaders);
@@ -456,12 +490,17 @@ async function handler(event, _context, overrides = {}) {
 
     if (action === 'send-text') {
       if (!meta.guestTokenHash) return response(409, { error: 'Peer not connected' }, corsHeaders);
+      if ((meta.eventCount || 0) >= MAX_ROOM_EVENTS) {
+        return response(429, { error: 'Room event limit reached' }, corsHeaders);
+      }
       const text = String(body.text || '').trim().slice(0, MAX_TEXT_CHARS);
       if (!text) return response(400, { error: 'Empty text' }, corsHeaders);
 
       const id = `${Date.now()}-${randomId()}`;
       const evKey = `rooms/${code}/events/${id}.json`;
       await s3PutJson(ctx, evKey, { id, kind: 'text', sender: role, text, ts: Date.now() });
+      meta.eventCount = (meta.eventCount || 0) + 1;
+      await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
       return response(200, { ok: true, id, cursor: evKey }, corsHeaders);
     }
 
@@ -471,6 +510,27 @@ async function handler(event, _context, overrides = {}) {
       if (!Number.isFinite(size) || size < 0 || size > MAX_FILE_BYTES) {
         return response(413, { error: 'File size exceeds 300 MB limit' }, corsHeaders);
       }
+      if ((meta.fileCount || 0) >= MAX_ROOM_FILES) {
+        return response(429, { error: 'Room file limit reached' }, corsHeaders);
+      }
+      if ((meta.totalBytes || 0) + size > MAX_ROOM_BYTES) {
+        return response(413, { error: 'Room total size limit (500 MB) reached' }, corsHeaders);
+      }
+
+      const quotaKey = todayQuotaKey();
+      const quota = (await s3GetJson(ctx, quotaKey)) || { bytes: 0, uploads: 0 };
+      if ((quota.bytes || 0) + size > DAILY_QUOTA_BYTES) {
+        return response(503, { error: 'Daily service traffic limit (3 GB) reached' }, corsHeaders);
+      }
+
+      quota.bytes = (quota.bytes || 0) + size;
+      quota.uploads = (quota.uploads || 0) + 1;
+      await s3PutJson(ctx, quotaKey, quota);
+
+      meta.fileCount = (meta.fileCount || 0) + 1;
+      meta.totalBytes = (meta.totalBytes || 0) + size;
+      await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
+
       const fileId = `${Date.now()}-${randomId()}`;
       const fileKey = `rooms/${code}/files/${fileId}`;
       const uploadUrl = createPresignedUrl({
@@ -487,6 +547,9 @@ async function handler(event, _context, overrides = {}) {
 
     if (action === 'commit-file') {
       if (!meta.guestTokenHash) return response(409, { error: 'Peer not connected' }, corsHeaders);
+      if ((meta.eventCount || 0) >= MAX_ROOM_EVENTS) {
+        return response(429, { error: 'Room event limit reached' }, corsHeaders);
+      }
       const fileId = String(body.fileId || '').replace(/[^a-zA-Z0-9-]/g, '');
       const name = sanitizeFilename(body.name);
       const size = Number(body.size) || 0;
@@ -507,6 +570,8 @@ async function handler(event, _context, overrides = {}) {
         batchIndex: Math.max(1, Number(body.batchIndex) || 1),
         ts: Date.now()
       });
+      meta.eventCount = (meta.eventCount || 0) + 1;
+      await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
       return response(200, { ok: true, id: fileId, cursor: evKey }, corsHeaders);
     }
 

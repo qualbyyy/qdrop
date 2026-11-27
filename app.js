@@ -8,8 +8,9 @@ const SESSION_RELAY_KEY = 'qdrop_air_relay_url';
 const SESSION_ACCESS_KEY = 'qdrop_air_access_key';
 const MAX_TEXT_CHARS = 32768;
 const DEFAULT_MAX_FILE_BYTES = 300 * 1024 * 1024;
-const DEFAULT_POLL_MS = 1500;
-const HIDDEN_POLL_MS = 4000;
+const DEFAULT_POLL_MS = 2000;
+const WAITING_POLL_MS = 3000;
+const HIDDEN_POLL_MS = 8000;
 
 function getConfig() {
   const cfg = globalThis.QDROP_AIR_CONFIG || {};
@@ -306,6 +307,7 @@ function initApp() {
     const display = formatted ? formatted.replace('-', ' ') : '--- ---';
     myCodeDisplay.textContent = display;
     qrModalCode.textContent = display;
+    copyCodeBtn.textContent = roomCode ? 'Код' : 'Ключ';
     if (qrModal.classList.contains('active') && !qrMinePanel.hidden) {
       renderMyQr();
     }
@@ -356,7 +358,7 @@ function initApp() {
     try {
       const payload = { action, ...params };
       const accessKey = getAccessKey();
-      if (accessKey && (action === 'create' || action === 'join')) {
+      if (accessKey && action === 'create') {
         payload.accessKey = accessKey;
       }
       const res = await fetch(url, {
@@ -390,7 +392,7 @@ function initApp() {
   function scheduleNextPoll() {
     stopPolling();
     if (!roomCode || !roomToken) return;
-    const delay = document.hidden ? HIDDEN_POLL_MS : config.pollIntervalMs;
+    const delay = document.hidden ? HIDDEN_POLL_MS : (isPaired ? config.pollIntervalMs : WAITING_POLL_MS);
     pollTimer = setTimeout(pollRoom, delay);
   }
 
@@ -413,7 +415,7 @@ function initApp() {
     updateConnectedUi();
   }
 
-  async function createRoom() {
+  async function createRoom(promptOn401 = false) {
     resetRoomState();
     const url = getRelayUrl();
     if (!url) {
@@ -434,9 +436,14 @@ function initApp() {
       scheduleNextPoll();
     } catch (err) {
       if (err.status === 401) {
-        setBadge('error', 'Нужен код доступа');
-        openNetworkModal();
-        showToast('Введи код доступа в разделе «Сеть»', 'error');
+        setBadge('pending', 'Нужен ключ');
+        myCodeDisplay.textContent = 'Введи ключ';
+        copyCodeBtn.textContent = 'Ключ';
+        if (promptOn401) {
+          openNetworkModal();
+          accessKeyInput.focus();
+          showToast('Неверный код доступа', 'error');
+        }
       } else {
         setBadge('error', 'Нет связи с релеем');
         showToast(err.message || 'Ошибка подключения к релею', 'error');
@@ -509,7 +516,7 @@ function initApp() {
       if (roomCode !== currentCode) return;
 
       if (data.closed) {
-        showToast('Собеседник отключился');
+        showToast(data.expired ? 'Комната истекла, создаём новую' : 'Собеседник отключился');
         await createRoom();
         return;
       }
@@ -807,7 +814,13 @@ function initApp() {
         job.entry.setProgress(100, 0);
         job.entry.setStatus('success', 'Доставлено');
       } catch (err) {
-        job.entry.setStatus('error', err && err.message ? err.message : 'Ошибка');
+        const msg = err && err.status === 503
+          ? 'Дневной лимит сервиса (3 ГБ) исчерпан'
+          : (err && err.message ? err.message : 'Ошибка');
+        job.entry.setStatus('error', msg);
+        if (err && err.status === 503) {
+          showToast('Дневной лимит сервиса (3 ГБ) исчерпан, попробуй завтра', 'error');
+        }
       }
     }
 
@@ -1012,14 +1025,30 @@ function initApp() {
     if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
   });
   copyCodeBtn.addEventListener('click', () => {
-    if (roomCode) copyText(roomCode, 'Код скопирован');
+    if (roomCode) {
+      copyText(roomCode, 'Код скопирован');
+    } else {
+      openNetworkModal();
+      accessKeyInput.focus();
+    }
   });
   copyLinkBtn.addEventListener('click', () => {
     if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
+    else {
+      openNetworkModal();
+      accessKeyInput.focus();
+    }
   });
 
   networkBtn.addEventListener('click', openNetworkModal);
   closeNetworkBtn.addEventListener('click', () => closeModal(networkModal));
+
+  accessKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyRelayBtn.click();
+    }
+  });
 
   applyRelayBtn.addEventListener('click', async () => {
     const urlVal = relayUrlInput.value.trim();
@@ -1031,7 +1060,7 @@ function initApp() {
     writeSession(SESSION_RELAY_KEY, urlVal === config.relayUrl ? '' : urlVal);
     writeSession(SESSION_ACCESS_KEY, accessKeyInput.value.trim());
     closeModal(networkModal);
-    await createRoom();
+    await createRoom(true);
   });
 
   resetRelayBtn.addEventListener('click', async () => {
