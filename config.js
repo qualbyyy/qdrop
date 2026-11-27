@@ -6,7 +6,7 @@ globalThis.QDROP_AIR_CONFIG = {
   peerServer: null,
   // URL развёрнутого Cloudflare Worker (turn-proxy/worker.js), например:
   // 'https://qdrop-turn-proxy.example.workers.dev'
-  turnProxyUrl: '',
+  turnProxyUrl: 'https://qdrop-turn-proxy.qualbyy.workers.dev',
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
