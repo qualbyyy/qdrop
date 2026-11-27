@@ -467,6 +467,7 @@ function initApp() {
       roomRole = res.role || 'guest';
       remoteDeviceName = res.peerDevice || 'Устройство';
       isPaired = true;
+      if (qrModal.classList.contains('active')) closeQrModal();
       renderMyCode();
       updateConnectedUi();
       showToast('Устройства связаны', 'success');
