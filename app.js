@@ -509,6 +509,7 @@ function initApp() {
       if (data.connected && !isPaired) {
         isPaired = true;
         remoteDeviceName = data.peerDevice || 'Устройство';
+        if (qrModal.classList.contains('active')) closeQrModal();
         updateConnectedUi();
         showToast('Устройства связаны', 'success');
       } else if (data.connected && data.peerDevice && data.peerDevice !== remoteDeviceName) {
@@ -917,33 +918,54 @@ function initApp() {
     return html5QrcodePromise;
   }
 
-  async function stopQrScanner() {
-    scannerSessionId += 1;
-    if (!qrScanner) return;
-    const instance = qrScanner;
-    qrScanner = null;
+  function releaseCameraTracks() {
+    for (const video of qrReader.querySelectorAll('video')) {
+      const stream = video.srcObject;
+      if (stream && typeof stream.getTracks === 'function') {
+        for (const track of stream.getTracks()) {
+          try { track.stop(); } catch {}
+        }
+      }
+      video.srcObject = null;
+    }
+    qrReader.replaceChildren();
+  }
+
+  async function stopScannerInstance(instance) {
+    if (!instance) return;
     try {
       if (instance.isScanning) await instance.stop();
     } catch {}
     try {
       await instance.clear();
     } catch {}
+    releaseCameraTracks();
+  }
+
+  async function stopQrScanner() {
+    scannerSessionId += 1;
+    const instance = qrScanner;
+    qrScanner = null;
+    await stopScannerInstance(instance);
   }
 
   async function startQrScanner() {
+    await stopQrScanner();
     const currentSession = ++scannerSessionId;
+    if (qrScanPanel.hidden || !qrModal.classList.contains('active') || document.hidden) return;
     scanStatus.textContent = 'Загрузка сканера…';
 
+    let instance = null;
     try {
       await loadHtml5QrcodeScript();
-      if (currentSession !== scannerSessionId || qrScanPanel.hidden || !qrModal.classList.contains('active')) {
+      if (currentSession !== scannerSessionId || qrScanPanel.hidden || !qrModal.classList.contains('active') || document.hidden) {
         return;
       }
       if (typeof Html5Qrcode === 'undefined') throw new Error('Сканер недоступен');
 
       scanStatus.textContent = 'Запуск камеры…';
       qrReader.replaceChildren();
-      const instance = new Html5Qrcode('qrReader');
+      instance = new Html5Qrcode('qrReader');
       qrScanner = instance;
 
       await instance.start(
@@ -963,12 +985,15 @@ function initApp() {
         () => {}
       );
 
-      if (currentSession !== scannerSessionId || qrScanPanel.hidden || !qrModal.classList.contains('active')) {
-        await stopQrScanner();
+      if (currentSession !== scannerSessionId || qrScanPanel.hidden || !qrModal.classList.contains('active') || document.hidden) {
+        if (qrScanner === instance) qrScanner = null;
+        await stopScannerInstance(instance);
         return;
       }
       scanStatus.textContent = 'Наведи камеру на QR-код второго устройства';
     } catch (err) {
+      if (qrScanner === instance) qrScanner = null;
+      await stopScannerInstance(instance);
       scanStatus.textContent = err && err.message ? err.message : 'Камера недоступна';
     }
   }
@@ -1131,6 +1156,11 @@ function initApp() {
   });
 
   document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopQrScanner();
+    } else if (qrModal.classList.contains('active') && !qrScanPanel.hidden) {
+      startQrScanner();
+    }
     if (roomCode && roomToken) scheduleNextPoll();
   });
 
@@ -1193,6 +1223,16 @@ function initApp() {
   // ---------- Старт ----------
 
   async function boot() {
+    const hashRaw = location.hash ? location.hash.slice(1) : '';
+    const hashParams = new URLSearchParams(hashRaw);
+    const hashKey = (hashParams.get('key') || '').trim();
+    if (hashKey) {
+      writeSession(SESSION_ACCESS_KEY, hashKey);
+      hashParams.delete('key');
+      const nextHash = hashParams.toString();
+      history.replaceState(null, '', location.pathname + location.search + (nextHash ? `#${nextHash}` : ''));
+    }
+
     const params = new URLSearchParams(location.search);
     const toCode = normalizeCode(params.get('to'));
     if (toCode) {
