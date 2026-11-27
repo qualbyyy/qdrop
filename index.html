@@ -114,6 +114,16 @@
           </div>
         </div>
 
+        <div class="quota-bar" id="quotaBar" hidden>
+          <div class="quota-row">
+            <span class="quota-label">Лимит на сегодня</span>
+            <span class="quota-value" id="quotaValue"></span>
+          </div>
+          <div class="progress quota-progress" aria-hidden="true">
+            <div class="progress-bar" id="quotaProgressBar"></div>
+          </div>
+        </div>
+
         <div class="text-drop-row" id="textDropRow">
           <textarea id="textInput" name="qdrop_quick_text" class="text-input glass-input text-area-input" rows="1" placeholder="Отправить ссылку или текст…" autocomplete="off" data-lpignore="true" data-1p-ignore></textarea>
           <button type="button" class="upload-btn send-text-btn" id="sendTextBtn" disabled>

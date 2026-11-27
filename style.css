@@ -1443,3 +1443,43 @@ body {
     background: rgba(44, 44, 46, 0.94);
   }
 }
+
+.quota-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-radius: var(--radius-card);
+}
+
+.quota-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.quota-label {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.quota-value {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-progress {
+  height: 5px;
+}
+
+.progress-bar.is-warn {
+  background: #ff9f0a;
+}
+
+.progress-bar.is-full {
+  background: var(--red-text);
+}

@@ -147,6 +147,9 @@ function initApp() {
 
   const windowDropOverlay = $('windowDropOverlay');
   const toastEl = $('toast');
+  const quotaBar = $('quotaBar');
+  const quotaValue = $('quotaValue');
+  const quotaProgressBar = $('quotaProgressBar');
 
   const config = getConfig();
   const baseTitle = document.title || 'qdrop air';
@@ -157,6 +160,7 @@ function initApp() {
   let isPaired = false;
   let remoteDeviceName = 'Устройство';
   let eventCursor = '';
+  let currentLimits = null;
   const seenEventIds = new Set();
 
   let pollTimer = null;
@@ -252,6 +256,33 @@ function initApp() {
     if (!unreadCount) return;
     unreadCount = 0;
     document.title = baseTitle;
+  }
+
+  function formatLimitError(err) {
+    if (!err) return 'Ошибка';
+    if (err.status === 429) return 'Личный лимит на сегодня исчерпан (500 МБ / 30 файлов)';
+    if (err.status === 503) {
+      return /monthly/i.test(err.message || '')
+        ? 'Месячный лимит бесплатного тарифа исчерпан'
+        : 'Дневной лимит сервиса (3 ГБ) исчерпан';
+    }
+    return err.message || 'Ошибка';
+  }
+
+  function updateQuotaUi(limits) {
+    if (!limits || typeof limits !== 'object') return;
+    currentLimits = limits;
+    const used = Number(limits.userBytesUsed) || 0;
+    const max = Number(limits.userBytesMax) || 1;
+    const uploads = Number(limits.userUploadsUsed) || 0;
+    const maxUploads = Number(limits.userUploadsMax) || 30;
+    const pct = Math.min(100, Math.round(Math.max(used / max, uploads / maxUploads) * 100));
+
+    quotaValue.textContent = `${formatSize(used)} / ${formatSize(max)} · ${uploads} / ${maxUploads} файлов`;
+    quotaProgressBar.style.width = `${pct}%`;
+    quotaProgressBar.classList.toggle('is-warn', pct >= 80 && pct < 100);
+    quotaProgressBar.classList.toggle('is-full', pct >= 100);
+    quotaBar.hidden = false;
   }
 
   function autoResizeTextInput() {
@@ -442,6 +473,7 @@ function initApp() {
       roomCode = res.code;
       roomToken = res.token;
       roomRole = res.role || 'host';
+      updateQuotaUi(res.limits);
       renderMyCode();
       setBadge('', 'Готов');
       scheduleNextPoll();
@@ -454,6 +486,9 @@ function initApp() {
         if (showErrorOn401) {
           showToast('Неверный код доступа', 'error');
         }
+      } else if (err.status === 503) {
+        setBadge('error', 'Лимит исчерпан');
+        showToast(formatLimitError(err), 'error');
       } else {
         setBadge('error', 'Нет связи с релеем');
         showToast(err.message || 'Ошибка подключения к релею', 'error');
@@ -496,6 +531,7 @@ function initApp() {
       roomRole = res.role || 'guest';
       remoteDeviceName = res.peerDevice || 'Устройство';
       isPaired = true;
+      updateQuotaUi(res.limits);
       if (qrModal.classList.contains('active')) closeQrModal();
       renderMyCode();
       updateConnectedUi();
@@ -926,6 +962,7 @@ function initApp() {
           token: roomToken,
           size: file.size
         });
+        updateQuotaUi(presign.limits);
         if (job.cancelled) throw new Error('Отменено');
         await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
           job.entry.setProgress(pct, speed);
@@ -946,15 +983,16 @@ function initApp() {
         job.entry.setProgress(100, 0);
         job.entry.setStatus('success', 'Доставлено');
       } catch (err) {
+        const isLimit = err && (err.status === 429 || err.status === 503);
         const msg = job.cancelled
           ? 'Отменено'
-          : err && err.status === 503
-            ? 'Дневной лимит сервиса (3 ГБ) исчерпан'
+          : isLimit
+            ? formatLimitError(err)
             : (err && err.message ? err.message : 'Ошибка');
         job.entry.setStatus('error', msg);
         attachRetryButton(job);
-        if (!job.cancelled && err && err.status === 503) {
-          showToast('Дневной лимит сервиса (3 ГБ) исчерпан, попробуй завтра', 'error');
+        if (!job.cancelled && isLimit) {
+          showToast(msg, 'error');
         }
       } finally {
         activeJob = null;
@@ -976,6 +1014,12 @@ function initApp() {
     for (const file of files) {
       if (file.size > config.maxFileBytes) {
         showToast(`${sanitizeFilename(file.name)} превышает лимит ${formatSize(config.maxFileBytes)}`, 'error');
+      } else if (
+        currentLimits &&
+        ((currentLimits.userUploadsUsed || 0) + valid.length + 1 > (currentLimits.userUploadsMax || 30) ||
+          (currentLimits.userBytesUsed || 0) + file.size > (currentLimits.userBytesMax || 500 * 1024 * 1024))
+      ) {
+        showToast('Личный лимит на сегодня исчерпан (500 МБ / 30 файлов)', 'error');
       } else {
         valid.push(file);
       }

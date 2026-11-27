@@ -15,6 +15,10 @@ const MAX_ROOM_FILES = 50;
 const MAX_ROOM_EVENTS = 200;
 const MAX_ROOM_BYTES = 500 * 1024 * 1024;
 const DAILY_QUOTA_BYTES = 3 * 1024 * 1024 * 1024;
+const PER_IP_DAILY_BYTES = 500 * 1024 * 1024;
+const PER_IP_DAILY_UPLOADS = 30;
+const MONTHLY_QUOTA_BYTES = 80 * 1024 * 1024 * 1024;
+const MONTHLY_QUOTA_UPLOADS = 1500;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT_JOIN = 10;
 const RATE_LIMIT_GENERAL = 90;
@@ -313,6 +317,23 @@ function todayQuotaKey(now = new Date()) {
   return `rooms/_quota/${now.toISOString().slice(0, 10)}.json`;
 }
 
+function monthQuotaKey(now = new Date()) {
+  return `rooms/_quota/${now.toISOString().slice(0, 7)}.json`;
+}
+
+function buildLimitsPayload(ipQuota, dailyQuota, monthlyQuota) {
+  return {
+    userBytesUsed: (ipQuota && ipQuota.bytes) || 0,
+    userBytesMax: PER_IP_DAILY_BYTES,
+    userUploadsUsed: (ipQuota && ipQuota.uploads) || 0,
+    userUploadsMax: PER_IP_DAILY_UPLOADS,
+    dailyBytesUsed: (dailyQuota && dailyQuota.bytes) || 0,
+    dailyBytesMax: DAILY_QUOTA_BYTES,
+    monthlyBytesUsed: (monthlyQuota && monthlyQuota.bytes) || 0,
+    monthlyBytesMax: MONTHLY_QUOTA_BYTES
+  };
+}
+
 async function handler(event, _context, overrides = {}) {
   const env = overrides.env || process.env;
   const fetchImpl = overrides.fetchImpl || fetch;
@@ -368,6 +389,17 @@ async function handler(event, _context, overrides = {}) {
       if (!checkAccessKey(body, env)) {
         return response(401, { error: 'Invalid access key' }, corsHeaders);
       }
+      const [dailyRaw, monthlyRaw] = await Promise.all([
+        s3GetJson(ctx, todayQuotaKey()),
+        s3GetJson(ctx, monthQuotaKey())
+      ]);
+      const daily = dailyRaw || { bytes: 0, uploads: 0, byIp: {} };
+      const monthly = monthlyRaw || { bytes: 0, uploads: 0 };
+      const ipHash = sha256Hex(sourceIp).slice(0, 12);
+      const ipQuota = (daily.byIp && daily.byIp[ipHash]) || { bytes: 0, uploads: 0 };
+      if ((monthly.bytes || 0) >= MONTHLY_QUOTA_BYTES || (monthly.uploads || 0) >= MONTHLY_QUOTA_UPLOADS) {
+        return response(503, { error: 'Monthly free-tier safety limit reached' }, corsHeaders);
+      }
       const device = String(body.device || 'Устройство').slice(0, 24);
       let code = '';
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -396,7 +428,7 @@ async function handler(event, _context, overrides = {}) {
         closed: false
       };
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
-      return response(200, { code, token, role: 'host' }, corsHeaders);
+      return response(200, { code, token, role: 'host', limits: buildLimitsPayload(ipQuota, daily, monthly) }, corsHeaders);
     }
 
     if (action === 'join') {
@@ -420,8 +452,22 @@ async function handler(event, _context, overrides = {}) {
       meta.guestDevice = String(body.device || 'Устройство').slice(0, 24);
       meta.joinedAt = Date.now();
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
+      const [dailyRaw, monthlyRaw] = await Promise.all([
+        s3GetJson(ctx, todayQuotaKey()),
+        s3GetJson(ctx, monthQuotaKey())
+      ]);
+      const daily = dailyRaw || { bytes: 0, uploads: 0, byIp: {} };
+      const monthly = monthlyRaw || { bytes: 0, uploads: 0 };
+      const ipHash = sha256Hex(sourceIp).slice(0, 12);
+      const ipQuota = (daily.byIp && daily.byIp[ipHash]) || { bytes: 0, uploads: 0 };
 
-      return response(200, { code, token, role: 'guest', peerDevice: meta.hostDevice }, corsHeaders);
+      return response(200, {
+        code,
+        token,
+        role: 'guest',
+        peerDevice: meta.hostDevice,
+        limits: buildLimitsPayload(ipQuota, daily, monthly)
+      }, corsHeaders);
     }
 
     // Все остальные действия требуют валидный code + token участника
@@ -525,14 +571,38 @@ async function handler(event, _context, overrides = {}) {
       }
 
       const quotaKey = todayQuotaKey();
-      const quota = (await s3GetJson(ctx, quotaKey)) || { bytes: 0, uploads: 0 };
+      const monthlyKey = monthQuotaKey();
+      const [quotaRaw, monthlyRaw] = await Promise.all([
+        s3GetJson(ctx, quotaKey),
+        s3GetJson(ctx, monthlyKey)
+      ]);
+      const quota = quotaRaw || { bytes: 0, uploads: 0, byIp: {} };
+      const monthly = monthlyRaw || { bytes: 0, uploads: 0 };
+      const ipHash = sha256Hex(sourceIp).slice(0, 12);
+      const byIp = quota.byIp && typeof quota.byIp === 'object' ? quota.byIp : {};
+      const ipQuota = byIp[ipHash] || { bytes: 0, uploads: 0 };
+      if ((ipQuota.bytes || 0) + size > PER_IP_DAILY_BYTES || (ipQuota.uploads || 0) + 1 > PER_IP_DAILY_UPLOADS) {
+        return response(429, { error: 'Per-user daily limit reached (500 MB / 30 files)' }, corsHeaders);
+      }
       if ((quota.bytes || 0) + size > DAILY_QUOTA_BYTES) {
         return response(503, { error: 'Daily service traffic limit (3 GB) reached' }, corsHeaders);
       }
+      if ((monthly.bytes || 0) + size > MONTHLY_QUOTA_BYTES || (monthly.uploads || 0) + 1 > MONTHLY_QUOTA_UPLOADS) {
+        return response(503, { error: 'Monthly free-tier safety limit reached' }, corsHeaders);
+      }
 
+      ipQuota.bytes = (ipQuota.bytes || 0) + size;
+      ipQuota.uploads = (ipQuota.uploads || 0) + 1;
+      byIp[ipHash] = ipQuota;
+      quota.byIp = byIp;
       quota.bytes = (quota.bytes || 0) + size;
       quota.uploads = (quota.uploads || 0) + 1;
-      await s3PutJson(ctx, quotaKey, quota);
+      monthly.bytes = (monthly.bytes || 0) + size;
+      monthly.uploads = (monthly.uploads || 0) + 1;
+      await Promise.all([
+        s3PutJson(ctx, quotaKey, quota),
+        s3PutJson(ctx, monthlyKey, monthly)
+      ]);
 
       meta.fileCount = (meta.fileCount || 0) + 1;
       meta.totalBytes = (meta.totalBytes || 0) + size;
@@ -549,7 +619,12 @@ async function handler(event, _context, overrides = {}) {
         expiresSec: UPLOAD_TTL_SEC,
         contentLength: size
       });
-      return response(200, { fileId, fileKey, uploadUrl }, corsHeaders);
+      return response(200, {
+        fileId,
+        fileKey,
+        uploadUrl,
+        limits: buildLimitsPayload(ipQuota, quota, monthly)
+      }, corsHeaders);
     }
 
     if (action === 'commit-file') {
