@@ -98,6 +98,8 @@ function initApp() {
   const $ = (id) => document.getElementById(id);
 
   const statusBadge = $('statusBadge');
+  const statusBadgeText = $('statusBadgeText');
+  const headerActionsCapsule = $('headerActionsCapsule');
   const qrBtn = $('qrBtn');
   const networkBtn = $('networkBtn');
   const disconnectBtn = $('disconnectBtn');
@@ -147,6 +149,7 @@ function initApp() {
 
   const windowDropOverlay = $('windowDropOverlay');
   const toastEl = $('toast');
+  const toastText = $('toastText');
   const quotaBar = $('quotaBar');
   const quotaValue = $('quotaValue');
   const quotaProgressBar = $('quotaProgressBar');
@@ -205,14 +208,17 @@ function initApp() {
 
   function createDirectionIcon(direction) {
     const ns = 'http://www.w3.org/2000/svg';
+    const wrap = document.createElement('span');
+    wrap.className = direction === 'in' ? 'dir-badge incoming' : 'dir-badge outgoing';
+    wrap.setAttribute('aria-hidden', 'true');
+
     const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('fill', 'none');
     svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-width', '2.1');
     svg.setAttribute('stroke-linecap', 'round');
     svg.setAttribute('stroke-linejoin', 'round');
-    svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('class', direction === 'in' ? 'dir-icon incoming' : 'dir-icon');
 
     const line = document.createElementNS(ns, 'line');
@@ -232,12 +238,14 @@ function initApp() {
     }
     svg.appendChild(line);
     svg.appendChild(poly);
-    return svg;
+    wrap.appendChild(svg);
+    return wrap;
   }
 
   function showToast(message, type = '') {
     clearTimeout(toastTimer);
-    toastEl.textContent = message;
+    if (toastText) toastText.textContent = message;
+    else toastEl.textContent = message;
     toastEl.className = 'toast' + (type ? ` ${type}` : '');
     void toastEl.offsetWidth;
     toastEl.classList.add('visible');
@@ -342,7 +350,8 @@ function initApp() {
 
   function setBadge(variant, text) {
     statusBadge.className = 'badge' + (variant ? ` ${variant}` : '');
-    statusBadge.textContent = text;
+    if (statusBadgeText) statusBadgeText.textContent = text;
+    else statusBadge.textContent = text;
   }
 
   function renderMyCode() {
@@ -1336,7 +1345,9 @@ function initApp() {
     if (!hasDraggedFiles(e)) return;
     e.preventDefault();
     windowDragDepth += 1;
-    if (windowDropOverlay) windowDropOverlay.classList.add('active');
+    if (windowDropOverlay) {
+      windowDropOverlay.classList.add('active');
+    }
   });
   window.addEventListener('dragover', (e) => {
     if (!hasDraggedFiles(e)) return;
