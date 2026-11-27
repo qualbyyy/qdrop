@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
-  <meta name="theme-color" content="#f2f2f0">
+  <meta name="theme-color" content="#f2f2f7">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://functions.yandexcloud.net https://storage.yandexcloud.net https:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>qdrop air — быстрая передача файлов и текста</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400..700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,82 +18,89 @@
     <div class="window" id="appWindow">
 
       <header class="window-header">
+        <div class="nav-top-row">
+          <span class="badge" id="statusBadge">Запуск…</span>
+          <div class="header-actions">
+            <button class="icon-btn glass-circle-btn" id="qrBtn" type="button" title="QR-связка" aria-label="QR-связка">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="5" height="5" x="3" y="3" rx="1"/>
+                <rect width="5" height="5" x="16" y="3" rx="1"/>
+                <rect width="5" height="5" x="3" y="16" rx="1"/>
+                <path d="M21 16h-3a2 2 0 0 0-2 2v3"/>
+                <path d="M21 21v.01"/>
+                <path d="M12 7v3a2 2 0 0 1-2 2H7"/>
+                <path d="M3 12h.01"/>
+                <path d="M12 3h.01"/>
+                <path d="M12 16v.01"/>
+                <path d="M16 12h1"/>
+                <path d="M21 12v.01"/>
+                <path d="M12 21v-1"/>
+              </svg>
+            </button>
+            <button class="icon-btn glass-circle-btn" id="networkBtn" type="button" title="Код доступа" aria-label="Код доступа">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="7.5" cy="15.5" r="4.5"/>
+                <path d="m21 2-9.6 9.6"/>
+                <path d="m15.5 7.5 3 3L22 7l-3-3"/>
+              </svg>
+            </button>
+            <button class="icon-btn glass-circle-btn danger-icon-btn" id="disconnectBtn" type="button" title="Отключиться" aria-label="Отключиться" hidden>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
         <div class="window-title">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
             <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
             <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
             <circle cx="12" cy="20" r="1"/>
           </svg>
-          <span>qdrop air</span>
-          <span class="badge" id="statusBadge">Запуск…</span>
-        </div>
-        <div class="header-actions">
-          <button class="icon-btn" id="qrBtn" type="button" title="QR-связка" aria-label="QR-связка">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <rect width="5" height="5" x="3" y="3" rx="1"/>
-              <rect width="5" height="5" x="16" y="3" rx="1"/>
-              <rect width="5" height="5" x="3" y="16" rx="1"/>
-              <path d="M21 16h-3a2 2 0 0 0-2 2v3"/>
-              <path d="M21 21v.01"/>
-              <path d="M12 7v3a2 2 0 0 1-2 2H7"/>
-              <path d="M3 12h.01"/>
-              <path d="M12 3h.01"/>
-              <path d="M12 16v.01"/>
-              <path d="M16 12h1"/>
-              <path d="M21 12v.01"/>
-              <path d="M12 21v-1"/>
-            </svg>
-          </button>
-          <button class="icon-btn" id="networkBtn" type="button" title="Код доступа" aria-label="Код доступа">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
-              <path d="M2 12h20"/>
-            </svg>
-          </button>
-          <button class="icon-btn danger-icon-btn" id="disconnectBtn" type="button" title="Отключиться" aria-label="Отключиться" hidden>
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-          </button>
+          <h1 class="large-title">qdrop air</h1>
         </div>
       </header>
 
       <section class="window-body">
 
-        <div class="pair-card" id="pairCard">
-          <div class="my-code-box">
-            <div class="my-code-meta">
-              <span class="pair-label">Твой код</span>
-              <span class="code-digits" id="myCodeDisplay">--- ---</span>
+        <div class="pair-section" id="pairCard">
+          <div class="ios-section-header">ПОДКЛЮЧЕНИЕ</div>
+          <div class="pair-card">
+            <div class="my-code-box">
+              <div class="my-code-meta">
+                <span class="pair-label">Твой код</span>
+                <span class="code-digits" id="myCodeDisplay">--- ---</span>
+              </div>
+              <div class="my-code-actions">
+                <button type="button" class="mini-btn" id="copyCodeBtn">Код</button>
+                <button type="button" class="mini-btn" id="copyLinkBtn">Ссылка</button>
+              </div>
             </div>
-            <div class="my-code-actions">
-              <button type="button" class="mini-btn" id="copyCodeBtn">Код</button>
-              <button type="button" class="mini-btn" id="copyLinkBtn">Ссылка</button>
+            <div class="ios-divider" aria-hidden="true"></div>
+            <div class="pair-connect">
+              <input type="text" id="remoteCodeInput" class="text-input code-input" inputmode="numeric" maxlength="7" placeholder="Код: 000-000" autocomplete="off" spellcheck="false" aria-label="Код собеседника">
+              <button type="button" class="upload-btn pair-btn" id="connectBtn">Подключиться</button>
             </div>
-          </div>
-          <div class="pair-connect">
-            <input type="text" id="remoteCodeInput" class="text-input code-input" inputmode="numeric" maxlength="7" placeholder="Код: 000-000" autocomplete="off" spellcheck="false" aria-label="Код собеседника">
-            <button type="button" class="upload-btn pair-btn" id="connectBtn">Подключиться</button>
           </div>
         </div>
 
         <div class="connected-bar" id="connectedBar" hidden>
           <div class="connected-info">
+            <span class="connected-dot" aria-hidden="true"></span>
             <span class="connected-peer" id="connectedPeerLabel">Собеседник подключён</span>
             <span class="badge configured" id="connectedRouteLabel">HTTPS 443</span>
           </div>
-          <button type="button" class="btn-secondary" id="barDisconnectBtn">Отключиться</button>
+          <button type="button" class="btn-secondary btn-disconnect" id="barDisconnectBtn">Отключиться</button>
         </div>
 
         <div class="dropzone is-offline" id="dropZone" tabindex="0" role="button" aria-label="Выбрать или перетащить файлы">
           <input type="file" id="fileInput" multiple hidden>
           <div class="dropzone-content">
             <div class="drop-icon-wrap">
-              <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                 <polyline points="17 8 12 3 7 8"/>
                 <line x1="12" y1="3" x2="12" y2="15"/>
@@ -105,8 +112,8 @@
         </div>
 
         <div class="text-drop-row" id="textDropRow">
-          <input type="text" id="textInput" class="text-input" placeholder="Отправить ссылку или короткий текст…" autocomplete="off">
-          <button type="button" class="btn-secondary send-text-btn" id="sendTextBtn" disabled>
+          <input type="text" id="textInput" class="text-input glass-input" placeholder="Отправить ссылку или короткий текст…" autocomplete="off">
+          <button type="button" class="upload-btn send-text-btn" id="sendTextBtn" disabled>
             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="22" y1="2" x2="11" y2="13"/>
               <polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -117,20 +124,23 @@
 
         <div class="transfer-section" id="transferSection">
           <div class="transfer-header">
-            <div class="transfer-title-wrap">
-              <span>Передачи</span>
+            <div class="transfer-title-wrap ios-section-header">
+              <span>ПЕРЕДАЧИ</span>
               <span class="transfer-count" id="transferCount"></span>
             </div>
             <div class="transfer-actions">
-              <label class="toggle-wrap" for="autoSaveToggle">
-                <input type="checkbox" id="autoSaveToggle" class="toggle-input" checked>
-                <span class="toggle-track" aria-hidden="true"></span>
-                <span class="toggle-label">Автосохранение</span>
-              </label>
               <button type="button" class="mini-btn save-all-btn" id="saveAllBtn" hidden>Сохранить все</button>
               <button type="button" class="clear-btn" id="clearFeedBtn" hidden>Очистить</button>
             </div>
           </div>
+
+          <label class="ios-switch-card" for="autoSaveToggle">
+            <span class="ios-switch-label">Автосохранение</span>
+            <span class="toggle-wrap">
+              <input type="checkbox" id="autoSaveToggle" class="toggle-input" checked>
+              <span class="toggle-track" aria-hidden="true"></span>
+            </span>
+          </label>
 
           <div class="feed-empty" id="feedEmpty">Файлы и текст появятся здесь после подключения</div>
           <ul class="file-list transfer-list" id="transferList" hidden></ul>
