@@ -702,7 +702,7 @@ body {
 
 .toggle-track {
   position: relative;
-  width: 58px;
+  width: 50px;
   height: 28px;
   background: var(--switch-track);
   border-radius: 14px;
@@ -715,12 +715,11 @@ body {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 34px;
+  width: 24px;
   height: 24px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 0.5px solid rgba(255, 255, 255, 0.6);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.08);
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -729,7 +728,7 @@ body {
 }
 
 .toggle-input:checked + .toggle-track::after {
-  transform: translateX(20px);
+  transform: translateX(22px);
 }
 
 .toggle-input:focus-visible + .toggle-track {
