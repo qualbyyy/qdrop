@@ -102,8 +102,7 @@ function initApp() {
 
   const pairCard = $('pairCard');
   const myCodeDisplay = $('myCodeDisplay');
-  const copyCodeBtn = $('copyCodeBtn');
-  const copyLinkBtn = $('copyLinkBtn');
+  const openQrActionBtn = $('openQrActionBtn');
   const remoteCodeInput = $('remoteCodeInput');
   const connectBtn = $('connectBtn');
 
@@ -132,7 +131,6 @@ function initApp() {
   const qrMinePanel = $('qrMinePanel');
   const qrCodeWrap = $('qrCodeWrap');
   const qrModalCode = $('qrModalCode');
-  const qrCopyLinkBtn = $('qrCopyLinkBtn');
   const qrScanPanel = $('qrScanPanel');
   const qrReader = $('qrReader');
   const scanStatus = $('scanStatus');
@@ -295,7 +293,7 @@ function initApp() {
     const display = formatted ? formatted.replace('-', ' ') : '--- ---';
     myCodeDisplay.textContent = display;
     qrModalCode.textContent = display;
-    copyCodeBtn.textContent = roomCode ? 'Код' : 'Ключ';
+    openQrActionBtn.textContent = roomCode ? 'QR' : 'Ключ';
     if (qrModal.classList.contains('active') && !qrMinePanel.hidden) {
       renderMyQr();
     }
@@ -423,7 +421,7 @@ function initApp() {
       if (err.status === 401) {
         setBadge('pending', 'Нужен ключ');
         myCodeDisplay.textContent = 'Введи ключ';
-        copyCodeBtn.textContent = 'Ключ';
+        openQrActionBtn.textContent = 'Ключ';
         openNetworkModal();
         if (showErrorOn401) {
           showToast('Неверный код доступа', 'error');
@@ -1029,22 +1027,12 @@ function initApp() {
   qrTabMine.addEventListener('click', () => switchQrTab('mine'));
   qrTabScan.addEventListener('click', () => switchQrTab('scan'));
 
-  qrCopyLinkBtn.addEventListener('click', () => {
-    if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
-  });
-  copyCodeBtn.addEventListener('click', () => {
+  openQrActionBtn.addEventListener('click', () => {
     if (roomCode) {
-      copyText(roomCode, 'Код скопирован');
+      openModal(qrModal);
+      switchQrTab('mine');
     } else {
       openNetworkModal();
-      accessKeyInput.focus();
-    }
-  });
-  copyLinkBtn.addEventListener('click', () => {
-    if (roomCode) copyText(buildShareUrl(roomCode), 'Ссылка скопирована');
-    else {
-      openNetworkModal();
-      accessKeyInput.focus();
     }
   });
 
