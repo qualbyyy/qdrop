@@ -137,6 +137,7 @@ function initApp() {
 
   const networkModal = $('networkModal');
   const closeNetworkBtn = $('closeNetworkBtn');
+  const accessKeyForm = $('accessKeyForm');
   const accessKeyInput = $('accessKeyInput');
   const relayTestStatus = $('relayTestStatus');
   const resetRelayBtn = $('resetRelayBtn');
@@ -1039,6 +1040,11 @@ function initApp() {
 
   networkBtn.addEventListener('click', openNetworkModal);
   closeNetworkBtn.addEventListener('click', () => closeModal(networkModal));
+
+  accessKeyForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    applyRelayBtn.click();
+  });
 
   accessKeyInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {

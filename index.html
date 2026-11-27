@@ -111,7 +111,7 @@
         </div>
 
         <div class="text-drop-row" id="textDropRow">
-          <input type="text" id="textInput" class="text-input glass-input" placeholder="Отправить ссылку или короткий текст…" autocomplete="off">
+          <input type="text" id="textInput" name="qdrop_quick_text" class="text-input glass-input" placeholder="Отправить ссылку или короткий текст…" autocomplete="off" data-lpignore="true" data-1p-ignore>
           <button type="button" class="upload-btn send-text-btn" id="sendTextBtn" disabled>
             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="22" y1="2" x2="11" y2="13"/>
@@ -208,8 +208,10 @@
           Код доступа хранится <strong>только в этой вкладке</strong> и полностью исчезает при её закрытии.
         </p>
 
-        <label class="field-label" for="accessKeyInput">Код доступа</label>
-        <input type="password" id="accessKeyInput" class="text-input" placeholder="Введи пароль" autocomplete="off">
+        <form id="accessKeyForm" autocomplete="off">
+          <label class="field-label" for="accessKeyInput">Код доступа</label>
+          <input type="password" id="accessKeyInput" name="qdrop_access_code" class="text-input" placeholder="Введи пароль" autocomplete="new-password" data-lpignore="true" data-1p-ignore>
+        </form>
 
         <div id="relayTestStatus" class="health-status" role="status"></div>
 
