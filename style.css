@@ -1232,3 +1232,78 @@ body {
     flex: 1 1 auto;
   }
 }
+
+/* ---------- Desktop Layout (>= 860px) ---------- */
+
+@media (min-width: 860px) {
+  body {
+    padding: 28px 28px 40px;
+  }
+
+  .viewport {
+    max-width: 980px;
+  }
+
+  .window {
+    gap: 20px;
+  }
+
+  .window-header {
+    position: static;
+    flex-direction: row-reverse;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 2px 6px;
+    background: none;
+  }
+
+  .nav-top-row {
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .window-title {
+    padding-left: 0;
+  }
+
+  .large-title {
+    font-size: 28px;
+  }
+
+  .window-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+    column-gap: 24px;
+    row-gap: 16px;
+    align-items: start;
+  }
+
+  .pair-section,
+  .connected-bar,
+  .dropzone,
+  .text-drop-row {
+    grid-column: 1;
+  }
+
+  .transfer-section {
+    grid-column: 2;
+    grid-row: 1 / span 4;
+  }
+
+  .dropzone-content {
+    padding: 36px 24px;
+  }
+
+  .feed-empty {
+    min-height: 240px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px 24px;
+  }
+
+  .file-list {
+    max-height: calc(100vh - 250px);
+    min-height: 240px;
+  }
+}
