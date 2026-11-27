@@ -575,6 +575,27 @@ async function handler(event, _context, overrides = {}) {
       return response(200, { ok: true, id: fileId, cursor: evKey }, corsHeaders);
     }
 
+    if (action === 'presign-download') {
+      if (!meta.guestTokenHash) return response(409, { error: 'Peer not connected' }, corsHeaders);
+      const rawKey = String(body.fileKey || '').trim();
+      const expectedPrefix = `rooms/${code}/files/`;
+      const fileId = rawKey.startsWith(expectedPrefix) ? rawKey.slice(expectedPrefix.length) : '';
+      if (!fileId || !/^[a-zA-Z0-9-]+$/.test(fileId)) {
+        return response(400, { error: 'Invalid file key' }, corsHeaders);
+      }
+      const name = sanitizeFilename(body.name);
+      const downloadUrl = createPresignedUrl({
+        method: 'GET',
+        bucket,
+        key: `${expectedPrefix}${fileId}`,
+        accessKey,
+        secretKey,
+        expiresSec: DOWNLOAD_TTL_SEC,
+        downloadFilename: name
+      });
+      return response(200, { downloadUrl, expiresIn: DOWNLOAD_TTL_SEC }, corsHeaders);
+    }
+
     return response(400, { error: 'Unknown action' }, corsHeaders);
   } catch {
     return response(502, { error: 'Storage backend error' }, corsHeaders);

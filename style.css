@@ -593,13 +593,22 @@ body {
 
 .text-drop-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
 }
 
 .text-drop-row .text-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.text-area-input {
+  resize: none;
+  overflow-y: auto;
+  min-height: 44px;
+  max-height: 120px;
+  line-height: 1.4;
+  border-radius: 22px;
 }
 
 .send-text-btn {
@@ -915,6 +924,70 @@ body {
 
 .item-action-btn:hover {
   background: rgba(74, 122, 109, 0.22);
+}
+
+.item-action-btn.danger-action {
+  background: var(--red-soft);
+  color: var(--red-text);
+}
+
+.item-action-btn.danger-action:hover {
+  background: rgba(255, 59, 48, 0.22);
+}
+
+.file-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-fill);
+  border: 0.5px solid var(--separator-soft);
+}
+
+/* ---------- Full-Window Drag & Drop Overlay ---------- */
+
+.drop-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(74, 122, 109, 0.16);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.drop-overlay.active {
+  display: flex;
+}
+
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 40px;
+  border-radius: 30px;
+  background: var(--glass-bg-hover);
+  border: 1.5px dashed var(--accent);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+}
+
+.drop-overlay-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--accent);
+}
+
+.drop-overlay-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 /* ---------- Modals (iOS Sheet Style) ---------- */
@@ -1304,5 +1377,69 @@ body {
   .file-list {
     max-height: calc(100vh - 250px);
     min-height: 240px;
+  }
+}
+
+/* ---------- Dark Mode (iOS Dark Palette) ---------- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --surface: #1c1c1e;
+    --surface-fill: rgba(118, 118, 128, 0.24);
+    --surface-fill-strong: rgba(118, 118, 128, 0.36);
+
+    --glass-bg: rgba(38, 38, 42, 0.74);
+    --glass-bg-hover: rgba(56, 56, 62, 0.88);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-shadow: 0 4px 14px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+    --separator: #38383a;
+    --separator-soft: rgba(235, 235, 245, 0.16);
+
+    --text: #ffffff;
+    --text-dim: rgba(235, 235, 245, 0.62);
+    --text-muted: rgba(235, 235, 245, 0.36);
+
+    --accent: #5d9687;
+    --accent-hover: #6ca898;
+    --accent-soft: rgba(93, 150, 135, 0.22);
+
+    --green: #5d9687;
+    --green-soft: rgba(93, 150, 135, 0.22);
+    --green-text: #85c2b2;
+
+    --orange-soft: rgba(255, 159, 10, 0.2);
+    --orange-text: #ffb340;
+
+    --red: #ff453a;
+    --red-soft: rgba(255, 69, 58, 0.2);
+    --red-text: #ff6961;
+
+    --switch-track: #39393d;
+  }
+
+  .window-header {
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.94) 72%, rgba(0, 0, 0, 0) 100%);
+  }
+
+  .dropzone-content {
+    border-color: rgba(235, 235, 245, 0.2);
+  }
+
+  .glass-input:focus {
+    background: rgba(44, 44, 46, 0.95);
+  }
+
+  .modal-card {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .qr-container {
+    background: #ffffff;
+  }
+
+  .toast {
+    background: rgba(44, 44, 46, 0.94);
   }
 }

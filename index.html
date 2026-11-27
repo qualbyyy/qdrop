@@ -4,9 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
-  <meta name="theme-color" content="#f2f2f7">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://functions.yandexcloud.net https://storage.yandexcloud.net https:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>qdrop air — быстрая передача файлов и текста</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -111,7 +115,7 @@
         </div>
 
         <div class="text-drop-row" id="textDropRow">
-          <input type="text" id="textInput" name="qdrop_quick_text" class="text-input glass-input" placeholder="Отправить ссылку или короткий текст…" autocomplete="off" data-lpignore="true" data-1p-ignore>
+          <textarea id="textInput" name="qdrop_quick_text" class="text-input glass-input text-area-input" rows="1" placeholder="Отправить ссылку или текст…" autocomplete="off" data-lpignore="true" data-1p-ignore></textarea>
           <button type="button" class="upload-btn send-text-btn" id="sendTextBtn" disabled>
             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="22" y1="2" x2="11" y2="13"/>
@@ -220,6 +224,17 @@
           <button class="save-btn" id="applyRelayBtn" type="button">Применить</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="drop-overlay" id="windowDropOverlay" aria-hidden="true">
+    <div class="drop-overlay-card">
+      <svg class="drop-overlay-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <span class="drop-overlay-title">Отпусти файлы для отправки</span>
     </div>
   </div>
 

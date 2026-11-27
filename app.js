@@ -7,6 +7,8 @@
 const SESSION_ACCESS_KEY = 'qdrop_air_access_key';
 const MAX_TEXT_CHARS = 32768;
 const DEFAULT_MAX_FILE_BYTES = 300 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 15 * 1024 * 1024;
+const DOWNLOAD_URL_SAFE_MS = 100_000;
 const DEFAULT_POLL_MS = 2000;
 const WAITING_POLL_MS = 3000;
 const HIDDEN_POLL_MS = 8000;
@@ -143,9 +145,11 @@ function initApp() {
   const resetRelayBtn = $('resetRelayBtn');
   const applyRelayBtn = $('applyRelayBtn');
 
+  const windowDropOverlay = $('windowDropOverlay');
   const toastEl = $('toast');
 
   const config = getConfig();
+  const baseTitle = document.title || 'qdrop air';
 
   let roomCode = '';
   let roomToken = '';
@@ -158,10 +162,13 @@ function initApp() {
   let pollTimer = null;
   let pollInFlight = false;
   let activeXhr = null;
+  let activeJob = null;
   const sendQueue = [];
   let isSending = false;
   const feedEntries = [];
   let itemCounter = 0;
+  let unreadCount = 0;
+  let windowDragDepth = 0;
 
   let html5QrcodePromise = null;
   let qrScanner = null;
@@ -232,6 +239,23 @@ function initApp() {
     toastTimer = setTimeout(() => {
       toastEl.classList.remove('visible');
     }, 3200);
+  }
+
+  function markUnreadIfHidden() {
+    if (!document.hidden) return;
+    unreadCount += 1;
+    document.title = `(${unreadCount}) qdrop air`;
+  }
+
+  function clearUnreadTitle() {
+    if (!unreadCount) return;
+    unreadCount = 0;
+    document.title = baseTitle;
+  }
+
+  function autoResizeTextInput() {
+    textInput.style.height = 'auto';
+    textInput.style.height = `${Math.min(120, textInput.scrollHeight)}px`;
   }
 
   function getDeviceLabel() {
@@ -337,7 +361,7 @@ function initApp() {
   async function relayCall(action, params = {}) {
     const url = getRelayUrl();
     if (!url) {
-      throw Object.assign(new Error('Не задан адрес релея (открой «Сеть»)'), { status: 0 });
+      throw Object.assign(new Error('Не задан адрес релея'), { status: 0 });
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -388,6 +412,7 @@ function initApp() {
       try { activeXhr.abort(); } catch {}
       activeXhr = null;
     }
+    activeJob = null;
     sendQueue.length = 0;
     isSending = false;
     roomCode = '';
@@ -446,7 +471,7 @@ function initApp() {
     }
     if (!getRelayUrl()) {
       openNetworkModal();
-      showToast('Сначала укажи Relay URL в разделе «Сеть»', 'error');
+      showToast('Не задан адрес релея', 'error');
       return;
     }
 
@@ -480,7 +505,7 @@ function initApp() {
         showToast('Код не найден или комната закрыта', 'error');
       } else if (err.status === 401) {
         openNetworkModal();
-        showToast('Нужен код доступа в разделе «Сеть»', 'error');
+        showToast('Нужен код доступа', 'error');
       } else {
         showToast(err.message || 'Не удалось подключиться', 'error');
       }
@@ -562,7 +587,25 @@ function initApp() {
     link.remove();
   }
 
-  function createFileFeedEntry(direction, name, size) {
+  async function resolveFreshDownloadUrl(entry) {
+    if (entry.downloadUrl && Date.now() < entry.urlExpiresAt) {
+      return entry.downloadUrl;
+    }
+    if (!entry.fileKey || !roomCode || !roomToken) {
+      return entry.downloadUrl;
+    }
+    const res = await relayCall('presign-download', {
+      code: roomCode,
+      token: roomToken,
+      fileKey: entry.fileKey,
+      name: entry.name
+    });
+    entry.downloadUrl = res.downloadUrl;
+    entry.urlExpiresAt = Date.now() + DOWNLOAD_URL_SAFE_MS;
+    return entry.downloadUrl;
+  }
+
+  function createFileFeedEntry(direction, name, size, previewFile = null) {
     itemCounter += 1;
     const id = `item-${itemCounter}`;
     const statusEl = el('span', { class: 'file-status uploading', text: direction === 'out' ? 'В очереди' : 'Получено' });
@@ -574,8 +617,23 @@ function initApp() {
       speedEl
     );
 
+    let previewUrl = '';
+    let thumbNode = null;
+    if (
+      previewFile &&
+      typeof URL !== 'undefined' &&
+      typeof URL.createObjectURL === 'function' &&
+      previewFile.type &&
+      previewFile.type.startsWith('image/') &&
+      previewFile.size <= MAX_PREVIEW_BYTES
+    ) {
+      previewUrl = URL.createObjectURL(previewFile);
+      thumbNode = el('img', { class: 'file-thumb', src: previewUrl, alt: '' });
+    }
+
     const actionsEl = el('div', { class: 'file-actions' }, statusEl);
     const li = el('li', { class: 'transfer-item' },
+      thumbNode,
       el('div', { class: 'file-main' },
         el('div', { class: 'file-info' },
           createDirectionIcon(direction),
@@ -597,6 +655,9 @@ function initApp() {
       size,
       state: 'active',
       downloadUrl: null,
+      fileKey: '',
+      urlExpiresAt: 0,
+      previewUrl,
       saved: false,
       setProgress(percent, speedBytesPerSec) {
         const pct = Math.max(0, Math.min(100, percent));
@@ -611,21 +672,47 @@ function initApp() {
           speedEl.textContent = '';
           if (kind === 'success') progressBar.style.width = '100%';
           progressWrap.hidden = true;
+        } else {
+          entry.state = 'active';
+          progressWrap.hidden = false;
         }
       },
-      attachDownload(downloadUrl, autoSaved) {
+      setActionButton(label, extraClass, onClick) {
+        const btn = el('button', {
+          type: 'button',
+          class: extraClass ? `item-action-btn ${extraClass}` : 'item-action-btn',
+          text: label,
+          onClick
+        });
+        actionsEl.replaceChildren(statusEl, btn);
+        return btn;
+      },
+      clearActionButton() {
+        actionsEl.replaceChildren(statusEl);
+      },
+      attachDownload(downloadUrl, autoSaved, fileKey) {
         entry.downloadUrl = downloadUrl;
+        entry.fileKey = fileKey || '';
+        entry.urlExpiresAt = Date.now() + DOWNLOAD_URL_SAFE_MS;
         entry.saved = Boolean(autoSaved);
         const btn = el('button', {
           type: 'button',
           class: 'item-action-btn',
           text: autoSaved ? 'Ещё раз' : 'Сохранить',
-          onClick: () => {
-            triggerDownload(downloadUrl, name);
-            entry.saved = true;
-            btn.textContent = 'Ещё раз';
-            entry.setStatus('success', 'Сохранено');
-            updateFeedControls();
+          onClick: async () => {
+            btn.disabled = true;
+            try {
+              const freshUrl = await resolveFreshDownloadUrl(entry);
+              triggerDownload(freshUrl, name);
+              entry.saved = true;
+              btn.textContent = 'Ещё раз';
+              entry.setStatus('success', 'Сохранено');
+              updateFeedControls();
+            } catch (err) {
+              showToast(err && err.message ? err.message : 'Не удалось обновить ссылку', 'error');
+            } finally {
+              btn.disabled = false;
+            }
           }
         });
         actionsEl.replaceChildren(statusEl, btn);
@@ -677,6 +764,7 @@ function initApp() {
   function handleIncomingEvent(ev) {
     if (ev.kind === 'text' && ev.text) {
       addTextFeedEntry('in', String(ev.text).slice(0, MAX_TEXT_CHARS));
+      markUnreadIfHidden();
       showToast('Получено сообщение');
       return;
     }
@@ -684,7 +772,8 @@ function initApp() {
       const name = sanitizeFilename(ev.name);
       const entry = createFileFeedEntry('in', name, Number(ev.size) || 0);
       const shouldAutoSave = (Number(ev.batchTotal) || 1) <= 1 && autoSaveToggle.checked;
-      entry.attachDownload(ev.downloadUrl, shouldAutoSave);
+      entry.attachDownload(ev.downloadUrl, shouldAutoSave, ev.fileKey);
+      markUnreadIfHidden();
       if (shouldAutoSave) {
         triggerDownload(ev.downloadUrl, name);
       }
@@ -700,9 +789,14 @@ function initApp() {
     saveAllBtn.disabled = true;
     for (let i = 0; i < targets.length; i += 1) {
       const entry = targets[i];
-      triggerDownload(entry.downloadUrl, entry.name);
-      entry.saved = true;
-      entry.setStatus('success', 'Сохранено');
+      try {
+        const freshUrl = await resolveFreshDownloadUrl(entry);
+        triggerDownload(freshUrl, entry.name);
+        entry.saved = true;
+        entry.setStatus('success', 'Сохранено');
+      } catch (err) {
+        showToast(err && err.message ? err.message : `Не удалось скачать ${entry.name}`, 'error');
+      }
       if (i + 1 < targets.length) {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -714,6 +808,9 @@ function initApp() {
   function clearFeed() {
     for (let i = feedEntries.length - 1; i >= 0; i -= 1) {
       if (feedEntries[i].state === 'active') continue;
+      if (feedEntries[i].previewUrl) {
+        try { URL.revokeObjectURL(feedEntries[i].previewUrl); } catch {}
+      }
       feedEntries.splice(i, 1);
     }
     if (feedEntries.length === 0) {
@@ -762,17 +859,49 @@ function initApp() {
     });
   }
 
+  function attachCancelButton(job) {
+    job.entry.setActionButton('Отмена', 'danger-action', () => {
+      job.cancelled = true;
+      if (activeJob === job && activeXhr) {
+        try { activeXhr.abort(); } catch {}
+        return;
+      }
+      const idx = sendQueue.indexOf(job);
+      if (idx !== -1) sendQueue.splice(idx, 1);
+      job.entry.setStatus('error', 'Отменено');
+      attachRetryButton(job);
+    });
+  }
+
+  function attachRetryButton(job) {
+    job.entry.setActionButton('Повторить', '', () => {
+      if (!isPaired) {
+        showToast('Сначала подключи второе устройство', 'error');
+        return;
+      }
+      job.cancelled = false;
+      job.entry.setProgress(0, 0);
+      job.entry.setStatus('uploading', 'В очереди');
+      attachCancelButton(job);
+      sendQueue.push(job);
+      processSendQueue();
+    });
+  }
+
   async function processSendQueue() {
     if (isSending) return;
     isSending = true;
 
     while (sendQueue.length > 0) {
       const job = sendQueue.shift();
+      if (job.cancelled) continue;
       if (!isPaired || !roomCode || !roomToken) {
         job.entry.setStatus('error', 'Нет связи');
+        attachRetryButton(job);
         continue;
       }
 
+      activeJob = job;
       const file = job.file;
       const safeName = sanitizeFilename(file.name);
       try {
@@ -782,9 +911,11 @@ function initApp() {
           token: roomToken,
           size: file.size
         });
+        if (job.cancelled) throw new Error('Отменено');
         await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
           job.entry.setProgress(pct, speed);
         });
+        if (job.cancelled) throw new Error('Отменено');
         await relayCall('commit-file', {
           code: roomCode,
           token: roomToken,
@@ -796,16 +927,22 @@ function initApp() {
           batchIndex: job.batchIndex
         });
         seenEventIds.add(presign.fileId);
+        job.entry.clearActionButton();
         job.entry.setProgress(100, 0);
         job.entry.setStatus('success', 'Доставлено');
       } catch (err) {
-        const msg = err && err.status === 503
-          ? 'Дневной лимит сервиса (3 ГБ) исчерпан'
-          : (err && err.message ? err.message : 'Ошибка');
+        const msg = job.cancelled
+          ? 'Отменено'
+          : err && err.status === 503
+            ? 'Дневной лимит сервиса (3 ГБ) исчерпан'
+            : (err && err.message ? err.message : 'Ошибка');
         job.entry.setStatus('error', msg);
-        if (err && err.status === 503) {
+        attachRetryButton(job);
+        if (!job.cancelled && err && err.status === 503) {
           showToast('Дневной лимит сервиса (3 ГБ) исчерпан, попробуй завтра', 'error');
         }
+      } finally {
+        activeJob = null;
       }
     }
 
@@ -832,8 +969,10 @@ function initApp() {
 
     const batchTotal = valid.length;
     valid.forEach((file, idx) => {
-      const entry = createFileFeedEntry('out', sanitizeFilename(file.name), file.size);
-      sendQueue.push({ file, entry, batchTotal, batchIndex: idx + 1 });
+      const entry = createFileFeedEntry('out', sanitizeFilename(file.name), file.size, file);
+      const job = { file, entry, batchTotal, batchIndex: idx + 1, cancelled: false };
+      attachCancelButton(job);
+      sendQueue.push(job);
     });
 
     processSendQueue();
@@ -853,6 +992,7 @@ function initApp() {
       if (res.id) seenEventIds.add(res.id);
       addTextFeedEntry('out', clipped);
       textInput.value = '';
+      autoResizeTextInput();
     } catch {
       showToast('Не удалось отправить текст', 'error');
       sendTextBtn.disabled = false;
@@ -1111,6 +1251,15 @@ function initApp() {
     fileInput.value = '';
   });
 
+  function hasDraggedFiles(e) {
+    return Boolean(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+  }
+
+  function hideWindowDropOverlay() {
+    windowDragDepth = 0;
+    if (windowDropOverlay) windowDropOverlay.classList.remove('active');
+  }
+
   dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
     dropZone.classList.add('dragover');
@@ -1118,16 +1267,41 @@ function initApp() {
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
   dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     dropZone.classList.remove('dragover');
+    hideWindowDropOverlay();
+    if (e.dataTransfer && e.dataTransfer.files) queueFiles(e.dataTransfer.files);
+  });
+
+  window.addEventListener('dragenter', (e) => {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+    windowDragDepth += 1;
+    if (windowDropOverlay) windowDropOverlay.classList.add('active');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+  });
+  window.addEventListener('dragleave', () => {
+    if (windowDragDepth > 0) windowDragDepth -= 1;
+    if (windowDragDepth === 0) hideWindowDropOverlay();
+  });
+  window.addEventListener('drop', (e) => {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    hideWindowDropOverlay();
     if (e.dataTransfer && e.dataTransfer.files) queueFiles(e.dataTransfer.files);
   });
 
   textInput.addEventListener('input', () => {
+    autoResizeTextInput();
     sendTextBtn.disabled = !isPaired || !textInput.value.trim();
   });
 
   textInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendQuickText();
     }
@@ -1152,11 +1326,16 @@ function initApp() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopQrScanner();
-    } else if (qrModal.classList.contains('active') && !qrScanPanel.hidden) {
-      startQrScanner();
+    } else {
+      clearUnreadTitle();
+      if (qrModal.classList.contains('active') && !qrScanPanel.hidden) {
+        startQrScanner();
+      }
     }
     if (roomCode && roomToken) scheduleNextPoll();
   });
+
+  window.addEventListener('focus', clearUnreadTitle);
 
   document.addEventListener('paste', (e) => {
     const dt = e.clipboardData;
@@ -1193,14 +1372,21 @@ function initApp() {
     if (text && text.trim()) {
       e.preventDefault();
       textInput.value = text.trim();
+      autoResizeTextInput();
       textInput.dispatchEvent(new Event('input'));
       textInput.focus();
     }
   });
 
-  window.addEventListener('pagehide', () => {
+  window.addEventListener('pagehide', (e) => {
+    if (e && e.persisted) return;
     stopQrScanner();
     stopPolling();
+    for (const entry of feedEntries) {
+      if (entry.previewUrl) {
+        try { URL.revokeObjectURL(entry.previewUrl); } catch {}
+      }
+    }
     const url = getRelayUrl();
     if (url && roomCode && roomToken) {
       try {
@@ -1217,6 +1403,10 @@ function initApp() {
   // ---------- Старт ----------
 
   async function boot() {
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+
     const hashRaw = location.hash ? location.hash.slice(1) : '';
     const hashParams = new URLSearchParams(hashRaw);
     const hashKey = (hashParams.get('key') || '').trim();
@@ -1229,8 +1419,19 @@ function initApp() {
 
     const params = new URLSearchParams(location.search);
     const toCode = normalizeCode(params.get('to'));
-    if (toCode) {
+    const sharedParts = [
+      (params.get('share_title') || '').trim(),
+      (params.get('share_text') || '').trim(),
+      (params.get('share_url') || '').trim()
+    ].filter(Boolean);
+    const uniqueShared = Array.from(new Set(sharedParts)).join('\n');
+
+    if (toCode || uniqueShared) {
       history.replaceState(null, '', location.pathname + location.hash);
+    }
+    if (uniqueShared) {
+      textInput.value = uniqueShared.slice(0, MAX_TEXT_CHARS);
+      autoResizeTextInput();
     }
 
     updateConnectedUi();
