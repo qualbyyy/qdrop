@@ -733,7 +733,7 @@ body {
 
 .m3-composer-field .text-area-input {
   border-radius: var(--shape-lg);
-  padding: 12px 18px;
+  padding: 11px 18px;
   background: var(--md-surface-container-high);
 }
 
@@ -841,10 +841,10 @@ body {
   display: block;
   width: 100%;
   resize: none;
-  overflow-y: auto;
+  overflow-y: hidden;
   min-height: 48px;
   max-height: 120px;
-  line-height: 1.42;
+  line-height: 1.4;
 }
 
 .send-text-btn {

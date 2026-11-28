@@ -295,7 +295,10 @@ function initApp() {
 
   function autoResizeTextInput() {
     textInput.style.height = 'auto';
-    textInput.style.height = `${Math.min(120, textInput.scrollHeight)}px`;
+    const borderY = textInput.offsetHeight - textInput.clientHeight;
+    const nextHeight = textInput.scrollHeight + borderY;
+    textInput.style.height = `${Math.min(120, nextHeight)}px`;
+    textInput.style.overflowY = nextHeight > 120 ? 'auto' : 'hidden';
   }
 
   function getDeviceLabel() {
