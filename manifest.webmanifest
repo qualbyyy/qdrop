@@ -1,6 +1,6 @@
 {
-  "name": "qdrop air",
-  "short_name": "qdrop air",
+  "name": "qdrop",
+  "short_name": "qdrop",
   "description": "Быстрая передача файлов и текста 1-на-1 по HTTPS",
   "start_url": "./",
   "scope": "./",

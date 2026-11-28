@@ -1835,6 +1835,29 @@ body {
   }
 }
 
+/* ---------- Footer ---------- */
+
+.window-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-top: 4px;
+  font-size: 12px;
+  color: var(--md-outline);
+  text-align: center;
+}
+
+.author-link {
+  color: var(--md-primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.author-link:hover {
+  text-decoration: underline;
+}
+
 /* ---------- Accessibility Safeguards ---------- */
 
 @media (prefers-reduced-motion: reduce) {

@@ -155,7 +155,7 @@ function initApp() {
   const quotaProgressBar = $('quotaProgressBar');
 
   const config = getConfig();
-  const baseTitle = document.title || 'qdrop air';
+  const baseTitle = document.title || 'qdrop';
 
   let roomCode = '';
   let roomToken = '';
@@ -257,7 +257,7 @@ function initApp() {
   function markUnreadIfHidden() {
     if (!document.hidden) return;
     unreadCount += 1;
-    document.title = `(${unreadCount}) qdrop air`;
+    document.title = `(${unreadCount}) qdrop`;
   }
 
   function clearUnreadTitle() {
@@ -1195,7 +1195,7 @@ function initApp() {
         (decodedText) => {
           const code = extractCodeFromInput(decodedText);
           if (!code) {
-            scanStatus.textContent = 'Это не QR-код qdrop air';
+            scanStatus.textContent = 'Это не QR-код qdrop';
             return;
           }
           stopQrScanner();
