@@ -302,8 +302,20 @@ body {
   color: var(--md-on-warning-container);
 }
 
+@keyframes dotPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 0.72;
+  }
+}
+
 .badge.pending .badge-dot {
   background: #B86E00;
+  animation: dotPulse 1.6s var(--ease-standard) infinite;
 }
 
 .badge.configured {
@@ -482,6 +494,10 @@ body {
   flex-wrap: wrap;
 }
 
+.connected-bar:not([hidden]) {
+  animation: itemSlideIn 240ms var(--spring-spatial);
+}
+
 .connected-dot {
   width: 10px;
   height: 10px;
@@ -489,6 +505,7 @@ body {
   background: var(--md-primary);
   flex-shrink: 0;
   box-shadow: 0 0 0 4px rgba(45, 106, 91, 0.18);
+  animation: dotPulse 2.4s var(--ease-standard) infinite;
 }
 
 .connected-peer {
@@ -566,6 +583,24 @@ body {
   background: var(--md-surface-container-low);
 }
 
+@keyframes starSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes floatIcon {
+  0%, 100% {
+    transform: translateY(-2px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
 .drop-rings {
   position: relative;
   width: 78px;
@@ -574,6 +609,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: transform 320ms var(--spring-spatial);
+}
+
+.dropzone:not(.is-offline):hover .drop-rings {
+  transform: scale(1.06);
+}
+
+.dropzone.dragover .drop-rings {
+  transform: scale(1.14);
 }
 
 .m3-expressive-shape {
@@ -582,15 +626,22 @@ body {
   width: 100%;
   height: 100%;
   fill: var(--md-primary-container);
-  transition: transform 420ms var(--spring-spatial), fill 180ms var(--ease-standard);
+  transform-origin: center;
+  animation: starSpin 18s linear infinite;
+  transition: fill 180ms var(--ease-standard);
+  will-change: transform;
+}
+
+.dropzone.is-offline .m3-expressive-shape {
+  animation-duration: 30s;
 }
 
 .dropzone:not(.is-offline):hover .m3-expressive-shape {
-  transform: rotate(15deg) scale(1.06);
+  animation-duration: 7s;
 }
 
 .dropzone.dragover .m3-expressive-shape {
-  transform: rotate(32deg) scale(1.14);
+  animation-duration: 3.5s;
   fill: var(--md-primary);
 }
 
@@ -604,9 +655,13 @@ body {
   transition: color 180ms var(--ease-standard), transform 260ms var(--spring-spatial);
 }
 
+.dropzone:not(.is-offline):hover .drop-icon-wrap {
+  transform: translateY(-2px);
+}
+
 .dropzone.dragover .drop-icon-wrap {
   color: var(--md-on-primary);
-  transform: translateY(-2px);
+  animation: floatIcon 1s var(--ease-standard) infinite;
 }
 
 .drop-icon {

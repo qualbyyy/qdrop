@@ -909,7 +909,9 @@ function initApp() {
       };
       xhr.onerror = () => {
         activeXhr = null;
-        reject(new Error('Сбой сети при загрузке файла'));
+        const err = new Error('Сбой сети при загрузке файла');
+        err.isNetworkError = true;
+        reject(err);
       };
       xhr.onabort = () => {
         activeXhr = null;
@@ -973,11 +975,19 @@ function initApp() {
         });
         updateQuotaUi(presign.limits);
         if (job.cancelled) throw new Error('Отменено');
-        await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
-          job.entry.setProgress(pct, speed);
-        });
+        try {
+          await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
+            job.entry.setProgress(pct, speed);
+          });
+        } catch (uploadErr) {
+          if (job.cancelled || !uploadErr || !uploadErr.isNetworkError) throw uploadErr;
+          job.entry.setProgress(0, 0);
+          await uploadFileDirect(presign.uploadUrl, file, (pct, speed) => {
+            job.entry.setProgress(pct, speed);
+          });
+        }
         if (job.cancelled) throw new Error('Отменено');
-        await relayCall('commit-file', {
+        const commitRes = await relayCall('commit-file', {
           code: roomCode,
           token: roomToken,
           fileId: presign.fileId,
@@ -987,6 +997,7 @@ function initApp() {
           batchTotal: job.batchTotal,
           batchIndex: job.batchIndex
         });
+        if (commitRes && commitRes.limits) updateQuotaUi(commitRes.limits);
         seenEventIds.add(presign.fileId);
         job.entry.clearActionButton();
         job.entry.setProgress(100, 0);

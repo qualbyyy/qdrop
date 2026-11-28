@@ -591,33 +591,17 @@ async function handler(event, _context, overrides = {}) {
         return response(503, { error: 'Monthly free-tier safety limit reached' }, corsHeaders);
       }
 
-      ipQuota.bytes = (ipQuota.bytes || 0) + size;
-      ipQuota.uploads = (ipQuota.uploads || 0) + 1;
-      byIp[ipHash] = ipQuota;
-      quota.byIp = byIp;
-      quota.bytes = (quota.bytes || 0) + size;
-      quota.uploads = (quota.uploads || 0) + 1;
-      monthly.bytes = (monthly.bytes || 0) + size;
-      monthly.uploads = (monthly.uploads || 0) + 1;
-      await Promise.all([
-        s3PutJson(ctx, quotaKey, quota),
-        s3PutJson(ctx, monthlyKey, monthly)
-      ]);
-
-      meta.fileCount = (meta.fileCount || 0) + 1;
-      meta.totalBytes = (meta.totalBytes || 0) + size;
-      await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
-
       const fileId = `${Date.now()}-${randomId()}`;
       const fileKey = `rooms/${code}/files/${fileId}`;
+      // Не подписываем content-length: на мобильных браузерах и прокси это вызывает 403/сбой PUT;
+      // реальный размер и квоты проверяются и списываются в commit-file через S3 HEAD.
       const uploadUrl = createPresignedUrl({
         method: 'PUT',
         bucket,
         key: fileKey,
         accessKey,
         secretKey,
-        expiresSec: UPLOAD_TTL_SEC,
-        contentLength: size
+        expiresSec: UPLOAD_TTL_SEC
       });
       return response(200, {
         fileId,
@@ -634,28 +618,95 @@ async function handler(event, _context, overrides = {}) {
       }
       const fileId = String(body.fileId || '').replace(/[^a-zA-Z0-9-]/g, '');
       const name = sanitizeFilename(body.name);
-      const size = Number(body.size) || 0;
-      if (!fileId || size < 0 || size > MAX_FILE_BYTES) {
+      if (!fileId) {
         return response(400, { error: 'Invalid file metadata' }, corsHeaders);
       }
       const fileKey = `rooms/${code}/files/${fileId}`;
+      const headRes = await s3Request({ ...ctx, method: 'HEAD', key: fileKey });
+      if (headRes.status === 404) {
+        return response(400, { error: 'Uploaded file not found in storage' }, corsHeaders);
+      }
+      if (!headRes.ok) {
+        throw new Error(`S3 HEAD ${headRes.status}`);
+      }
+      const actualSize = Number(headRes.headers.get('content-length'));
+      const size = Number.isFinite(actualSize) && actualSize >= 0 ? actualSize : (Number(body.size) || 0);
+      if (size < 0 || size > MAX_FILE_BYTES) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(413, { error: 'File size exceeds 300 MB limit' }, corsHeaders);
+      }
+      if ((meta.fileCount || 0) >= MAX_ROOM_FILES) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(429, { error: 'Room file limit reached' }, corsHeaders);
+      }
+      if ((meta.totalBytes || 0) + size > MAX_ROOM_BYTES) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(413, { error: 'Room total size limit (500 MB) reached' }, corsHeaders);
+      }
+
+      const quotaKey = todayQuotaKey();
+      const monthlyKey = monthQuotaKey();
+      const [quotaRaw, monthlyRaw] = await Promise.all([
+        s3GetJson(ctx, quotaKey),
+        s3GetJson(ctx, monthlyKey)
+      ]);
+      const quota = quotaRaw || { bytes: 0, uploads: 0, byIp: {} };
+      const monthly = monthlyRaw || { bytes: 0, uploads: 0 };
+      const ipHash = sha256Hex(sourceIp).slice(0, 12);
+      const byIp = quota.byIp && typeof quota.byIp === 'object' ? quota.byIp : {};
+      const ipQuota = byIp[ipHash] || { bytes: 0, uploads: 0 };
+
+      if ((ipQuota.bytes || 0) + size > PER_IP_DAILY_BYTES || (ipQuota.uploads || 0) + 1 > PER_IP_DAILY_UPLOADS) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(429, { error: 'Per-user daily limit reached (500 MB / 30 files)' }, corsHeaders);
+      }
+      if ((quota.bytes || 0) + size > DAILY_QUOTA_BYTES) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(503, { error: 'Daily service traffic limit (3 GB) reached' }, corsHeaders);
+      }
+      if ((monthly.bytes || 0) + size > MONTHLY_QUOTA_BYTES || (monthly.uploads || 0) + 1 > MONTHLY_QUOTA_UPLOADS) {
+        await s3Request({ ...ctx, method: 'DELETE', key: fileKey }).catch(() => {});
+        return response(503, { error: 'Monthly free-tier safety limit reached' }, corsHeaders);
+      }
+
+      ipQuota.bytes = (ipQuota.bytes || 0) + size;
+      ipQuota.uploads = (ipQuota.uploads || 0) + 1;
+      byIp[ipHash] = ipQuota;
+      quota.byIp = byIp;
+      quota.bytes = (quota.bytes || 0) + size;
+      quota.uploads = (quota.uploads || 0) + 1;
+      monthly.bytes = (monthly.bytes || 0) + size;
+      monthly.uploads = (monthly.uploads || 0) + 1;
+
       const evKey = `rooms/${code}/events/${fileId}.json`;
-      await s3PutJson(ctx, evKey, {
-        id: fileId,
-        kind: 'file',
-        sender: role,
-        name,
-        size,
-        mime: String(body.mime || 'application/octet-stream').slice(0, 120),
-        fileKey,
-        batchTotal: Math.max(1, Number(body.batchTotal) || 1),
-        batchIndex: Math.max(1, Number(body.batchIndex) || 1),
-        ts: Date.now()
-      });
+      await Promise.all([
+        s3PutJson(ctx, quotaKey, quota),
+        s3PutJson(ctx, monthlyKey, monthly),
+        s3PutJson(ctx, evKey, {
+          id: fileId,
+          kind: 'file',
+          sender: role,
+          name,
+          size,
+          mime: String(body.mime || 'application/octet-stream').slice(0, 120),
+          fileKey,
+          batchTotal: Math.max(1, Number(body.batchTotal) || 1),
+          batchIndex: Math.max(1, Number(body.batchIndex) || 1),
+          ts: Date.now()
+        })
+      ]);
+
+      meta.fileCount = (meta.fileCount || 0) + 1;
+      meta.totalBytes = (meta.totalBytes || 0) + size;
       meta.eventCount = (meta.eventCount || 0) + 1;
       if (!meta.lastEventKey || evKey > meta.lastEventKey) meta.lastEventKey = evKey;
       await s3PutJson(ctx, `rooms/${code}/meta.json`, meta);
-      return response(200, { ok: true, id: fileId, cursor: evKey }, corsHeaders);
+      return response(200, {
+        ok: true,
+        id: fileId,
+        cursor: evKey,
+        limits: buildLimitsPayload(ipQuota, quota, monthly)
+      }, corsHeaders);
     }
 
     if (action === 'presign-download') {
